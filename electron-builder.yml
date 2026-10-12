@@ -1,0 +1,16 @@
+appId: org.freeswap.app
+productName: Freeswap
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**
+  - package.json
+asarUnpack:
+  - node_modules/ffmpeg-static/**
+win:
+  target: nsis
+  artifactName: Freeswap-Setup-${version}.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

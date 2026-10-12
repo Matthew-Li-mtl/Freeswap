@@ -1,0 +1,10 @@
+node_modules/
+out/
+dist/
+release/
+*.tsbuildinfo
+
+# Personal notes, study material and logs (kept local, not shared)
+notes/
+logs/
+*.log
