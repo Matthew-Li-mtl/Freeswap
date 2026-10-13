@@ -29,7 +29,7 @@
 //     which yields the average kick envelope of the whole track, and place the beat marker
 //     where it reaches half its height on the rising edge (the attack), minus the low-pass
 //     filter's delay. Without a clear kick we fall back to the peak of the folded spectral
-//     flux (~12 ms resolution).
+//     flux (~23 ms frames, refined by interpolation).
 //  6. Downbeat ("1" of the bar): beats are numbered k = 0, 1, 2...; we score the four
 //     possible offsets r = k mod 4 using per-beat features that tend to be larger on bar lines:
 //     kick/bass accent, crash/onset accent, timbre change between the 4 beats before and
@@ -43,9 +43,17 @@
 //  8. Output the grid as { bpm, anchor } with the anchor on a phrase start, normalised into
 //     [0, 32 beats).
 //
-// Silence or music without a steady pulse returns null. Two tests: the "coherence" of step 3
-// (how much of the onset energy lines up with the grid) and a pulse test (do the beat
-// positions carry clearly stronger onsets than positions between the beats?).
+// Optional BPM hint (from the file's tags): if a grid at the hinted tempo explains the onsets
+// at least HINT_MIN_RATIO as well as our own best grid, the hint wins. That resolves octave and
+// 3:2 ambiguities; a hint that is plainly wrong is ignored.
+//
+// "No beat" (null) is reserved for material that really has none. Two tests, both designed not
+// to be vetoed by long beatless intros, breakdowns or heavy distortion:
+//   - significance: do onsets prefer one phase of the grid more than chance would explain?
+//     (A Rayleigh test; noise scores ~1-2, music 8+.)
+//   - slow-pulse test: is the periodicity really a slow pulse such as chord changes every few
+//     seconds, which also "fit" any grid that is a multiple of their rate?
+// If either says "no beat" but there is a BPM hint, we trust the hint and still return a grid.
 
 import type { BeatGrid } from '../../../shared/types'
 import type { ChromaFrames } from './key'
@@ -70,10 +78,17 @@ export interface TempoResult {
 
 const MIN_BPM = 60
 const MAX_BPM = 200
-/** Below this coherence there is no usable pulse. */
-const MIN_COHERENCE = 0.06
-/** At least this fraction of beats must stand out from the in-between positions (see pulsePresence). */
-const MIN_PULSE = 0.6
+/**
+ * Rhythm significance (see `periodicity`): random onsets give z ~ 1-2, a beat gives 8+.
+ * Below this we say "no beat".
+ */
+const MIN_SIGNIFICANCE = 4
+/** Pulses slower than this (BPM) are not beats: chord changes every 2 s, say. */
+const SLOW_PULSE_BPM = 40
+/** Above this slow-pulse ratio the "beat" is really a slow pulse (see slowPulseRatio). */
+const MAX_SLOW_RATIO = 0.75
+/** A BPM hint is accepted if a grid at its tempo explains this much of the best grid's score. */
+const HINT_MIN_RATIO = 0.4
 const DOWNBEAT_HINT = 2
 const PHRASE_HINT = 1.5
 // Noise floors: feature differences smaller than these are not treated as musical changes
@@ -158,6 +173,14 @@ interface Periodicity {
   score: number
   /** Largest single |S_h| divided by the envelope's total: 0..1. */
   coherence: number
+  /**
+   * Largest |S_h| divided by sqrt(sum of squared envelope values): a Rayleigh-style test of
+   * "do onsets prefer one phase of the grid?". If onsets fell at random phases the sum would be
+   * a random walk, whose length is about sqrt(sum of squares), giving ~1. A real beat adds up
+   * coherently, so the value grows with the square root of the amount of rhythmic material:
+   * a long intro or breakdown without drums lowers it only a little.
+   */
+  significance: number
 }
 
 /**
@@ -193,10 +216,12 @@ function periodicity(env: Envelope, bpm: number): Periodicity {
     a4r = 0,
     a4i = 0
   let total = 0
+  let squares = 0
   for (let j = 0; j < data.length; j++) {
     const v = data[j]
     if (v !== 0) {
       total += v
+      squares += v * v
       a1r += v * z1r
       a1i += v * z1i
       a2r += v * z2r
@@ -223,10 +248,60 @@ function periodicity(env: Envelope, bpm: number): Periodicity {
   const m2 = Math.hypot(a2r, a2i)
   const m3 = Math.hypot(a3r, a3i)
   const m4 = Math.hypot(a4r, a4i)
+  const best = Math.max(m1, m2, m3, m4)
   return {
     score: m1 + m2 + m3 + m4,
-    coherence: total > 0 ? Math.max(m1, m2, m3, m4) / total : 0
+    coherence: total > 0 ? best / total : 0,
+    significance: squares > 0 ? best / Math.sqrt(squares) : 0
   }
+}
+
+/** |sum_j env[j] * exp(-2*pi*i * hz * j / rate)|: one Fourier coefficient of the envelope. */
+function fourierMagnitude(env: Envelope, hz: number): number {
+  const { data, rate } = env
+  const w = (-2 * Math.PI * hz) / rate
+  const cr = Math.cos(w)
+  const ci = Math.sin(w)
+  let zr = 1
+  let zi = 0
+  let ar = 0
+  let ai = 0
+  for (let j = 0; j < data.length; j++) {
+    const v = data[j]
+    ar += v * zr
+    ai += v * zi
+    const t = zr * cr - zi * ci
+    zi = zr * ci + zi * cr
+    zr = t
+  }
+  return Math.hypot(ar, ai)
+}
+
+/**
+ * Is the "beat" really a slow pulse? Chords changing every 4 s are perfectly periodic at
+ * 15 BPM, and therefore also at 120 BPM (every 8th "beat" has an onset), so a grid at 120 BPM
+ * fits them well. The tell-tale sign: a train of identical events every m beats has Fourier
+ * components of the same size at *every* multiple of f/m (f = beat frequency), including the
+ * in-between ones f*1/m ... f*(m-1)/m. A real beat (an onset on most beats, maybe with bar
+ * accents) has those in-between components much weaker than the grid's own (f, 2f, 3f, 4f).
+ * Returns the largest (mean in-between component / component at f) over slow periods
+ * m = 2..16 whose rate f/m is below SLOW_PULSE_BPM: ~0.9 for pads, < 0.5 for beats.
+ */
+function slowPulseRatio(env: Envelope, bpm: number): number {
+  const f = bpm / 60
+  // The grid's strength: its strongest harmonic (onsets on every half beat, say, have nothing
+  // at f itself but a lot at 2f).
+  let atBeat = 0
+  for (let h = 1; h <= 4; h++) atBeat = Math.max(atBeat, fourierMagnitude(env, f * h))
+  if (atBeat <= 0) return Infinity
+  let worst = 0
+  for (let m = 2; m <= 16; m++) {
+    if (bpm / m >= SLOW_PULSE_BPM) continue
+    let sum = 0
+    for (let j = 1; j < m; j++) sum += fourierMagnitude(env, (f * j) / m)
+    worst = Math.max(worst, sum / (m - 1) / atBeat)
+  }
+  return worst
 }
 
 /** Best-scoring tempo on a grid of candidates, refined by a parabola through its neighbours. */
@@ -320,7 +395,7 @@ function kickPhase(low: LowBandEnvelope, period: number): number | null {
   const peak = h[p]
   let base = peak
   for (let d = 0; d <= bins / 2; d++) base = Math.min(base, h[(p - d + bins) % bins])
-  if (peak <= 0 || peak - base < 0.4 * peak) return null
+  if (peak <= 0 || peak - base < 0.2 * peak) return null
   // Walk back from the peak to where the rising edge crosses half height.
   const thr = base + 0.5 * (peak - base)
   for (let d = 1; d <= bins / 2; d++) {
@@ -336,31 +411,16 @@ function kickPhase(low: LowBandEnvelope, period: number): number | null {
 }
 
 /**
- * Pulse test: fraction of beats whose onset is clearly stronger than the onset found between
- * beats (at 0.37 of a beat, a position that avoids 8th and 16th notes). Coherence alone can
- * be fooled by sparse periodic events (chords changing every 4 s are perfectly periodic at
- * 15 BPM, hence also at 120 BPM) on top of an irregular background of small onsets (e.g. the
- * beating between sustained notes). A real pulse makes the beat positions stand out.
+ * Beat phase: the kick attack if there is a clear one that agrees (within a quarter beat) with
+ * the broadband onsets, otherwise the onset peak. The agreement check stops e.g. an off-beat
+ * bass line from being mistaken for the kick.
  */
-function pulsePresence(flux: Envelope, phase: number, period: number): number {
-  const { data, rate } = flux
-  const reach = Math.max(1, Math.round(Math.min(0.035, 0.08 * period) * rate))
-  const peakNear = (t: number): number => {
-    const c = Math.round(t * rate)
-    let m = 0
-    for (let j = Math.max(0, c - reach); j <= Math.min(data.length - 1, c + reach); j++) m = Math.max(m, data[j])
-    return m
-  }
-  let beats = 0
-  let hits = 0
-  for (let t = phase; (t + period) * rate < data.length; t += period) {
-    const on = peakNear(t)
-    const off = peakNear(t + 0.37 * period)
-    if (on === 0 && off === 0) continue // silence: neither evidence for nor against a pulse
-    beats++
-    if (on > 1.5 * off) hits++
-  }
-  return beats < 8 ? 0 : hits / beats
+function beatPhase(inp: TempoInputs, period: number): number {
+  const coarse = coarsePhase(inp.flux, period)
+  const kick = kickPhase(inp.low, period)
+  if (kick == null) return coarse
+  const d = mod(kick - coarse, period)
+  return Math.min(d, period - d) <= period / 4 ? kick : coarse
 }
 
 // --- 6/7. per-beat features, downbeat and phrase -----------------------------------------
@@ -454,6 +514,7 @@ function beatFeatures(inp: TempoInputs, phase: number, period: number): BeatFeat
   const cr = inp.chroma
   const nFlux = fl.data.length
   const nChroma = cr.data.length / 12
+  const bandAcc = new Float64Array(NUM_BANDS)
   for (let k = 0; k < count; k++) {
     const t0 = phase + k * period
     const t1 = t0 + period
@@ -465,16 +526,27 @@ function beatFeatures(inp: TempoInputs, phase: number, period: number): BeatFeat
     for (let j = ja; j < jb; j++) e += le.data[j]
     lowDb[k] = 10 * Math.log10(e + 1e-10)
 
-    // Timbre bands averaged over the beat.
-    const fa = Math.max(0, Math.ceil(t0 * fl.rate))
-    const fb = Math.max(fa + 1, Math.min(nFlux, Math.ceil(t1 * fl.rate)))
+    // Timbre bands averaged over the beat. Frame j stands for the interval (j +/- 0.5) / rate;
+    // frames that straddle the beat's edges count with the fraction that lies inside. Without
+    // this, a beat would contain sometimes n and sometimes n+1 whole frames, and that jitter
+    // looks like a timbre change.
+    const u0 = t0 * fl.rate + 0.5 // beat edges in "frame index + 0.5" units
+    const u1 = t1 * fl.rate + 0.5
+    const fa = Math.max(0, Math.floor(u0))
+    const fb = Math.min(nFlux, Math.ceil(u1))
+    bandAcc.fill(0)
+    let wsum = 0
+    for (let j = fa; j < fb; j++) {
+      const w = Math.min(j + 1, u1) - Math.max(j, u0)
+      if (w <= 0) continue
+      wsum += w
+      for (let b = 0; b < NUM_BANDS; b++) bandAcc[b] += w * inp.bands[j * NUM_BANDS + b]
+    }
     let total = 0
     for (let b = 0; b < NUM_BANDS; b++) {
-      let s = 0
-      for (let j = fa; j < fb && j < nFlux; j++) s += inp.bands[j * NUM_BANDS + b]
-      s /= fb - fa
-      total += s
-      bandLog[k * NUM_BANDS + b] = Math.log10(s + 1e-8)
+      const v = wsum > 0 ? bandAcc[b] / wsum : 0
+      total += v
+      bandLog[k * NUM_BANDS + b] = Math.log10(v + 1e-8)
     }
     energy[k] = total
 
@@ -631,21 +703,55 @@ function choosePhrase(f: BeatFeatures, downbeat: number, firstBeat: number): num
 
 // --- main entry --------------------------------------------------------------------------
 
-export function detectTempo(inp: TempoInputs, bpmLow: number): TempoResult | null {
-  const { flux } = inp
-  const coarse = coarseTempo(flux)
-  if (coarse == null) return null
+export interface TempoOptions {
+  /** Tempi are folded into [bpmLow, 2 * bpmLow). */
+  bpmLow: number
+  /** BPM from the file's tags, if any (any octave; it gets folded). */
+  bpmHint?: number | null
+}
 
-  let bpm = searchTempo(flux, foldBpm(coarse, bpmLow), 1.5, 0.02)
-  bpm = searchTempo(flux, bpm, 0.04, 0.002)
+/** Coarse + fine tempo search around `center` (already folded). */
+function refineTempo(flux: Envelope, center: number, halfWidth: number): number {
+  const bpm = searchTempo(flux, center, halfWidth, 0.02)
+  return searchTempo(flux, bpm, 0.04, 0.002)
+}
+
+export function detectTempo(inp: TempoInputs, opts: TempoOptions): TempoResult | null {
+  const { flux } = inp
+  const { bpmLow } = opts
+  let total = 0
+  for (let j = 0; j < flux.data.length; j++) total += flux.data[j]
+  if (!(total > 0)) return null // silence or a constant tone: nothing to align a grid to
+
+  const rawHint = opts.bpmHint
+  const hint =
+    rawHint != null && Number.isFinite(rawHint) && rawHint >= 30 && rawHint <= 300 ? foldBpm(rawHint, bpmLow) : null
+
+  // Our own estimate.
+  const coarse = coarseTempo(flux)
+  let bpm = coarse == null ? null : refineTempo(flux, foldBpm(coarse, bpmLow), 1.5)
+
+  // The tag's estimate, used when it explains the onsets reasonably well compared with ours.
+  // This settles octave / 3:2 ambiguities the way the producer or a previous tool did, while a
+  // tag that is plainly wrong (a grid at its tempo explains little) is ignored.
+  if (hint != null) {
+    let atHint = refineTempo(flux, hint, 0.6)
+    if (Math.abs(atHint - hint) <= 0.05) atHint = hint // tags are usually exact; keep e.g. 92.5
+    if (bpm == null || periodicity(flux, atHint).score >= HINT_MIN_RATIO * periodicity(flux, bpm).score) bpm = atHint
+  }
+  if (bpm == null) return null
   bpm = foldBpm(snapBpm(foldBpm(bpm, bpmLow)), bpmLow)
 
-  const { coherence } = periodicity(flux, bpm)
-  if (!(coherence >= MIN_COHERENCE)) return null
+  // Is there a beat at all? Only reject when the evidence says "no": no significant periodicity
+  // (noise, ambient) or the periodicity is a slow pulse (pads). Weak or partial beats pass.
+  const { coherence, significance } = periodicity(flux, bpm)
+  if (significance < MIN_SIGNIFICANCE || slowPulseRatio(flux, bpm) >= MAX_SLOW_RATIO) {
+    if (hint == null) return null
+    bpm = foldBpm(snapBpm(hint), bpmLow) // can't hear a beat: trust the tag
+  }
 
   const period = 60 / bpm
-  const phase = kickPhase(inp.low, period) ?? coarsePhase(flux, period)
-  if (pulsePresence(flux, phase, period) < MIN_PULSE) return null
+  const phase = beatPhase(inp, period)
 
   const feats = beatFeatures(inp, phase, period)
   if (feats.count < 8) return null

@@ -18,7 +18,7 @@
 // (The generic RBJ shelf formula is close but not identical: it reads a 1 kHz tone ~0.25 dB
 // low, because its shelf has a slightly different mid-band shape.)
 
-import { BiquadChain, type BiquadCoeffs } from './dsp'
+import type { BiquadCoeffs } from './dsp'
 
 const SHELF_HZ = 1681.974450955533
 const SHELF_DB = 3.999843853973347
@@ -57,18 +57,38 @@ export function kWeighting(sampleRate: number): BiquadCoeffs[] {
 
 /** Integrated loudness in LUFS of a single channel, or null if everything is gated out. */
 export function integratedLoudness(x: Float32Array, sampleRate: number): number | null {
-  const filter = new BiquadChain(kWeighting(sampleRate))
+  const [sh, hp] = kWeighting(sampleRate)
   // Mean square of each 100 ms step; a 400 ms gating block is the mean of 4 consecutive steps.
   const step = Math.max(1, Math.round(sampleRate * 0.1))
   const nSteps = Math.floor(x.length / step)
   if (nSteps < 4) return null
   const stepMs = new Float64Array(nSteps)
-  const buf = new Float32Array(step)
-  for (let s = 0; s < nSteps; s++) {
-    filter.process(x.subarray(s * step, (s + 1) * step), step, buf)
+  // Both K-weighting biquads inline (transposed direct form II, state in locals): one pass
+  // over the samples, no intermediate buffer.
+  const { b0: sb0, b1: sb1, b2: sb2, a1: sa1, a2: sa2 } = sh
+  const { b0: hb0, b1: hb1, b2: hb2, a1: ha1, a2: ha2 } = hp
+  let s1 = 0
+  let s2 = 0
+  let h1 = 0
+  let h2 = 0
+  for (let st = 0, i = 0; st < nSteps; st++) {
     let e = 0
-    for (let i = 0; i < step; i++) e += buf[i] * buf[i]
-    stepMs[s] = e / step
+    for (const end = i + step; i < end; i++) {
+      const v = x[i]
+      const y = sb0 * v + s1
+      s1 = sb1 * v - sa1 * y + s2
+      s2 = sb2 * v - sa2 * y
+      const z = hb0 * y + h1
+      h1 = hb1 * y - ha1 * z + h2
+      h2 = hb2 * y - ha2 * z
+      e += z * z
+    }
+    stepMs[st] = e / step
+    // Flush denormal-range state (see Biquad.process).
+    if (Math.abs(s1) < 1e-30) s1 = 0
+    if (Math.abs(s2) < 1e-30) s2 = 0
+    if (Math.abs(h1) < 1e-30) h1 = 0
+    if (Math.abs(h2) < 1e-30) h2 = 0
   }
 
   const nBlocks = nSteps - 3

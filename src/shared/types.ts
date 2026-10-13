@@ -92,7 +92,7 @@ export interface AnalysisResult {
 export const TEMPO_RANGES = [0.06, 0.1, 0.16, 0.25, 0.5, 1]
 
 export const WAVEFORM_RATE = 150
-export const ANALYSIS_VERSION = 1
+export const ANALYSIS_VERSION = 2
 
 export type KeyNotation = 'musical' | 'camelot'
 

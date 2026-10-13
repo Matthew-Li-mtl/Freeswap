@@ -227,6 +227,123 @@ export function loopTrack(o: LoopTrackOptions): Float32Array {
   return x
 }
 
+export interface MusicTrackOptions {
+  sampleRate: number
+  bpm: number
+  duration: number
+  /** Time of the first drum hit, which is beat 1 of a phrase. Must be >= intro. */
+  offset: number
+  /** Seconds of beatless ambient pad before the drums come in (default 0). */
+  intro?: number
+  /** Hi-hat pattern (default '8ths'). */
+  hats?: '8ths' | '16ths' | 'triplets'
+  /** Beat ranges [from, to) (counted from the first drum hit) played half-time: kick on 1, snare on 3. */
+  halfTime?: [number, number][]
+  /** Drive for tanh saturation, e.g. 8 = heavy distortion (default: none). */
+  drive?: number
+  /** Broadband noise amplitude (default 0.02). */
+  noise?: number
+  /** Chord pad level (default 0.05) and whether pads play in every phrase (default: every other). */
+  padLevel?: number
+  padsAlways?: boolean
+  seed?: number
+}
+
+/** One cycle of a bright tone (harmonics 1-6 at 1/h), for cheap wavetable oscillators. */
+const TABLE_SIZE = 4096
+const toneTable = (() => {
+  const t = new Float32Array(TABLE_SIZE + 1)
+  for (let i = 0; i <= TABLE_SIZE; i++) {
+    for (let h = 1; h <= 6; h++) t[i] += Math.sin((2 * Math.PI * h * i) / TABLE_SIZE) / h
+  }
+  return t
+})()
+
+/** Add a wavetable tone of `freq` Hz to dst[s0..s1) with a soft envelope. */
+function addTone(dst: Float32Array, sr: number, s0: number, s1: number, freq: number, amp: number): void {
+  const inc = (freq / sr) * TABLE_SIZE
+  let ph = 0
+  const end = Math.min(dst.length, s1)
+  for (let s = Math.max(0, s0); s < end; s++) {
+    const env = Math.min(1, (s - s0) / (0.01 * sr), (end - s) / (0.01 * sr))
+    const i = ph | 0
+    dst[s] += amp * env * (toneTable[i] + (toneTable[i + 1] - toneTable[i]) * (ph - i))
+    ph += inc
+    if (ph >= TABLE_SIZE) ph -= TABLE_SIZE
+  }
+}
+
+/**
+ * A more music-like test track: kick, snare, hats, bass line and chord pads (Am F C G, one chord
+ * per bar), broadband noise, phrase structure (pads drop out every other 8-bar phrase), and
+ * optional ambient intro, half-time sections and saturation.
+ */
+export function musicTrack(o: MusicTrackOptions): DrumTrack {
+  const sr = o.sampleRate
+  const T = 60 / o.bpm
+  const n = Math.round(o.duration * sr)
+  const x = new Float32Array(n)
+  const rand = rng(o.seed ?? 3)
+  const k = shapedKick(sr, 'sweep', rand)
+  const snare = new Float32Array(Math.round(sr * 0.2))
+  for (let i = 0; i < snare.length; i++) {
+    const t = i / sr
+    snare[i] = 0.35 * Math.exp(-t / 0.05) * ((rand() * 2 - 1) * 0.8 + 0.5 * Math.sin(2 * Math.PI * 190 * t))
+  }
+  const hatSample = hat(sr, 0.15, rand)
+  const chords = [
+    [57, 60, 64],
+    [53, 57, 60],
+    [60, 64, 67],
+    [55, 59, 62]
+  ]
+  const bass = [33, 41, 36, 43]
+  const intro = o.intro ?? 0
+
+  // Ambient intro: slow-attack pads, no drums.
+  for (let t = 0, c = 0; t < intro; t += 4 * T, c++) {
+    const s0 = Math.round(t * sr)
+    const s1 = Math.round(Math.min(intro, t + 4 * T) * sr)
+    for (const m of chords[c % 4]) addTone(x, sr, s0, s1, midiToHz(m), 0.04)
+  }
+
+  const isHalf = (b: number): boolean => (o.halfTime ?? []).some(([a, z]) => b >= a && b < z)
+  for (let b = 0; ; b++) {
+    const t = o.offset + b * T
+    if (t >= o.duration) break
+    const s = t * sr
+    const inBar = b % 4
+    if (isHalf(b)) {
+      if (inBar === 0) addAt(x, k, s)
+      if (inBar === 2) addAt(x, snare, s)
+    } else {
+      addAt(x, k, s)
+      if (inBar === 1 || inBar === 3) addAt(x, snare, s)
+    }
+    const hats = o.hats ?? '8ths'
+    const subdivisions = hats === '16ths' ? 4 : hats === 'triplets' ? 3 : 2
+    for (let d = 0; d < subdivisions; d++) addAt(x, hatSample, s + (d * T * sr) / subdivisions)
+    if (inBar === 0) {
+      const bar = Math.floor(b / 4)
+      const s0 = Math.round(s)
+      const s1 = Math.round((t + 4 * T) * sr)
+      addTone(x, sr, s0, s1, midiToHz(bass[bar % 4]), 0.15)
+      if (o.padsAlways || Math.floor(b / 32) % 2 === 1) {
+        for (const m of chords[bar % 4]) addTone(x, sr, s0, s1, midiToHz(m), o.padLevel ?? 0.05)
+      }
+    }
+  }
+
+  const noise = o.noise ?? 0.02
+  for (let i = 0; i < n; i++) {
+    let v = x[i] + noise * (rand() * 2 - 1)
+    if (o.drive) v = Math.tanh(o.drive * v) / Math.tanh(o.drive)
+    x[i] = v
+  }
+  const anchor = ((o.offset % (32 * T)) + 32 * T) % (32 * T)
+  return { signal: x, anchor }
+}
+
 /** Smallest |a - b| modulo m. */
 export function circDiff(a: number, b: number, m: number): number {
   const d = (((a - b) % m) + m) % m

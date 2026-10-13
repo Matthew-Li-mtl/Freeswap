@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { WAVEFORM_RATE } from '../../../../shared/types'
 import { analyzeAudio } from '../analyze'
 import type { AnalysisRequest, AnalysisResponse } from '../protocol'
-import { drumTrack } from './synth'
+import { drumTrack, musicTrack } from './synth'
 
 describe('analyzeAudio', () => {
   it('returns all fields with the original duration after decimation', () => {
@@ -31,15 +31,17 @@ describe('analyzeAudio', () => {
     expect(analyzeAudio(x, sr, { bpmLow: 75 }).gainDb).toBeCloseTo(10, 1)
   })
 
-  it('analyses a 6-minute 44.1 kHz track in reasonable time', () => {
-    const sr = 44100
-    const tr = drumTrack({ bpm: 128, sampleRate: sr, duration: 360, offset: 0.61 })
+  it('analyses a 6-minute 22.05 kHz track quickly', () => {
+    const sr = 22050
+    const tr = musicTrack({ sampleRate: sr, bpm: 128, duration: 360, offset: 0.4 })
+    analyzeAudio(tr.signal.subarray(0, sr * 20), sr, { bpmLow: 75 }) // warm up the JIT
     const t0 = performance.now()
     const r = analyzeAudio(tr.signal, sr, { bpmLow: 75 })
     const ms = performance.now() - t0
-    console.log(`analyzeAudio, 6 min @ 44.1 kHz: ${ms.toFixed(0)} ms`)
+    console.log(`analyzeAudio, 6 min @ 22.05 kHz: ${ms.toFixed(0)} ms`)
     expect(r.bpm).toBe(128)
-    expect(ms).toBeLessThan(15000) // generous for slow CI machines; ~2-2.5 s on a laptop
+    expect(r.key).toBe(21) // A minor
+    expect(ms).toBeLessThan(5000) // generous for slow CI machines; ~0.6 s on a laptop
   }, 60000)
 })
 
@@ -65,6 +67,20 @@ describe('worker', () => {
     expect(msg.id).toBe(7)
     expect(msg.result?.waveform.length).toBe(Math.ceil(3 * WAVEFORM_RATE) * 4)
     expect(transfer[0]).toBe(msg.result?.waveform.buffer)
+  })
+
+  it('forwards the BPM hint', () => {
+    // Clicks every 0.25 s fit 120 and 80 BPM equally; the hint decides.
+    const sr = 22050
+    const mono = new Float32Array(sr * 30)
+    for (let t = 0.1; t < 29.9; t += 0.25) {
+      const s0 = Math.round(t * sr)
+      for (let i = 0; i < 200; i++) mono[s0 + i] += 0.5 * Math.exp(-i / 40) * Math.sin(i * 0.3)
+    }
+    scope.postMessage.mockClear()
+    scope.onmessage?.({ data: { id: 9, mono, sampleRate: sr, bpmLow: 75, bpmHint: 80 } })
+    const [msg] = scope.postMessage.mock.calls[0] as [AnalysisResponse]
+    expect(msg.result?.bpm).toBe(80)
   })
 
   it('posts an error message when analysis throws', () => {

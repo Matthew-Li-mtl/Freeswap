@@ -1,9 +1,14 @@
 // Track analysis entry point: waveform, loudness, key, tempo and beat grid in one pass.
 //
-// Everything except loudness runs at ~22-24 kHz: musically relevant information for these
-// tasks lives well below 10 kHz, and halving the rate halves the cost of every later stage.
-// Memory: besides the caller's buffer we keep one half-length decimated copy; every filter
-// stage works chunk by chunk, and the spectral stages keep only small per-frame summaries.
+// Two working sample rates:
+//   base (~22-24 kHz): 44.1/48 kHz input is first halved. Used for loudness and for the
+//     waveform's overall peak and treble band, which need the top octaves.
+//   half (~11-12 kHz): the base signal halved again. Onsets, tempo, kick envelope, key and the
+//     waveform's bass/mid bands only need content below ~5 kHz, and every stage is roughly
+//     proportional to the number of samples, so this halves their cost. (Classic beat trackers
+//     work at 8-11 kHz for the same reason.)
+// Memory: besides the caller's buffer we keep at most a half-length and a quarter-length copy;
+// the spectral stages keep only small per-frame summaries.
 
 import type { AnalysisResult } from '../../../shared/types'
 import { decimate2 } from './dsp'
@@ -16,6 +21,11 @@ import { computeWaveform } from './waveform'
 export interface AnalyzeOptions {
   /** Detected tempi are folded into [bpmLow, 2 * bpmLow). */
   bpmLow: number
+  /**
+   * BPM from the file's tags (ID3 TBPM etc.), if any. Used to settle octave/3:2 ambiguity and,
+   * when no beat can be detected, as the grid tempo. Ignored if it plainly contradicts the audio.
+   */
+  bpmHint?: number | null
 }
 
 /**
@@ -34,23 +44,26 @@ const STEREO_COMPENSATION_DB = 3.01
 export function analyzeAudio(mono: Float32Array, sampleRate: number, opts: AnalyzeOptions): AnalysisResult {
   const duration = mono.length / sampleRate
 
-  // Loudness at the original rate: K-weighting boosts the top octave, which decimation removes.
-  const lufs = integratedLoudness(mono, sampleRate)
-  const gainDb = lufs == null ? null : Math.round(gainForLoudness(lufs + STEREO_COMPENSATION_DB) * 100) / 100
-
   let x = mono
   let sr = sampleRate
   if (sr > 30000) {
     x = decimate2(mono)
     sr = sampleRate / 2
   }
+  const half = decimate2(x, 'fast')
+  const halfRate = sr / 2
 
-  const waveform = computeWaveform(x, sr, duration)
-  const { flux, bands } = spectralOnsets(x, sr)
-  const low = lowBandEnvelope(x, sr)
-  const chroma = analyzeChroma(x, sr)
+  // Loudness at the base rate. (Content above ~11 kHz is dropped, which typically changes
+  // the K-weighted level by well under 0.2 dB.)
+  const lufs = integratedLoudness(x, sr)
+  const gainDb = lufs == null ? null : Math.round(gainForLoudness(lufs + STEREO_COMPENSATION_DB) * 100) / 100
+
+  const waveform = computeWaveform(x, sr, duration, half)
+  const { flux, bands } = spectralOnsets(half, halfRate)
+  const low = lowBandEnvelope(half, halfRate)
+  const chroma = analyzeChroma(half, halfRate)
   const bpmLow = opts.bpmLow > 0 ? opts.bpmLow : 75
-  const tempo = detectTempo({ flux, bands, low, chroma: chroma.chroma, duration }, bpmLow)
+  const tempo = detectTempo({ flux, bands, low, chroma: chroma.chroma, duration }, { bpmLow, bpmHint: opts.bpmHint })
   // Key detection uses the grid (if any) to find where chord loops start.
   const key = estimateKey(chroma, tempo ? tempo.grid : null)
 

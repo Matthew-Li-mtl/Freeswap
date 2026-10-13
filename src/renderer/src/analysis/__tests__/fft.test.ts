@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { RealFft, fft, hannWindow } from '../fft'
+import { RealFft, fft, fillFrame, hannWindow } from '../fft'
 import { rng } from './synth'
+
+const frames = new Map<number, Float64Array>()
+function frameBuf(n: number): Float64Array {
+  let f = frames.get(n)
+  if (!f) frames.set(n, (f = new Float64Array(n)))
+  return f
+}
 
 function naiveDft(re: Float64Array, im: Float64Array): [Float64Array, Float64Array] {
   const n = re.length
@@ -58,6 +65,22 @@ describe('fft', () => {
         expect(rf.outRe[k]).toBeCloseTo(re[k], 8)
         expect(rf.outIm[k]).toBeCloseTo(im[k], 8)
       }
+    }
+  })
+
+  it('powerAt (window + transform straight from the signal) matches the frame-based path', () => {
+    const r = rng(4)
+    const n = 512
+    const signal = new Float32Array(3000).map(() => r() * 2 - 1)
+    const w = hannWindow(n)
+    const rf = new RealFft(n)
+    const a = new Float64Array(n / 2 + 1)
+    const b = new Float64Array(n / 2 + 1)
+    for (const center of [0, 100, 1500, 2900]) {
+      fillFrame(signal, center, w, frameBuf(n))
+      rf.power(frameBuf(n), a)
+      rf.powerAt(signal, center, w, b)
+      for (let k = 0; k < a.length; k++) expect(b[k]).toBeCloseTo(a[k], 8)
     }
   })
 

@@ -160,7 +160,16 @@ export function groupDelay(chain: BiquadCoeffs[], freq: number, sampleRate: numb
 
 // --- Decimation ---------------------------------------------------------------------------
 
-const HALFBAND_TAPS = 47 // odd; taps at even offsets (other than the centre) are zero
+/**
+ * Filter lengths (odd; taps at even offsets other than the centre are zero).
+ * 'high' (47 taps): ~60 dB rejection from ~0.29 of the input rate, used to bring 44.1/48 kHz
+ *   audio down to 22/24 kHz for display and loudness.
+ * 'fast' (23 taps, 6 multiplies per output): wider transition band. Used for the internal
+ *   22 -> 11 kHz step feeding onset and key analysis: anything that aliases lands above
+ *   ~3.7 kHz, far from the notes (< 2.1 kHz) and harmless for onset detection.
+ */
+const HALFBAND_TAPS = { high: 47, fast: 23 }
+export type DecimationQuality = keyof typeof HALFBAND_TAPS
 
 function besselI0(x: number): number {
   // Power series for the modified Bessel function of the first kind, order 0.
@@ -175,15 +184,16 @@ function besselI0(x: number): number {
   return sum
 }
 
-let halfbandCache: Float64Array | null = null
+const halfbandCache = new Map<DecimationQuality, Float64Array>()
 
 /**
  * Half-band low-pass (cutoff = 1/4 of the sample rate) as a Kaiser-windowed sinc.
  * Returns the one-sided odd taps h[1], h[3], ... (h[0] is exactly 0.5, h[-k] = h[k]).
  */
-function halfbandTaps(): Float64Array {
-  if (halfbandCache) return halfbandCache
-  const M = (HALFBAND_TAPS - 1) / 2
+function halfbandTaps(quality: DecimationQuality): Float64Array {
+  const cached = halfbandCache.get(quality)
+  if (cached) return cached
+  const M = (HALFBAND_TAPS[quality] - 1) / 2
   const beta = 6 // Kaiser shape: ~60 dB stop-band attenuation
   const i0b = besselI0(beta)
   const odd = new Float64Array((M + 1) >> 1)
@@ -198,7 +208,7 @@ function halfbandTaps(): Float64Array {
   }
   // Normalise so the DC gain is exactly 1 (0.5 from the centre tap + 0.5 from the rest).
   for (let j = 0; j < odd.length; j++) odd[j] *= 0.5 / sum
-  halfbandCache = odd
+  halfbandCache.set(quality, odd)
   return odd
 }
 
@@ -207,30 +217,54 @@ function halfbandTaps(): Float64Array {
  * sample m sits at exactly the same time as input sample 2m (the filter is symmetric, i.e.
  * zero-phase: no delay is introduced).
  */
-export function decimate2(x: Float32Array): Float32Array {
+export function decimate2(x: Float32Array, quality: DecimationQuality = 'high'): Float32Array {
   const n = x.length
   const out = new Float32Array((n + 1) >> 1)
-  const h = halfbandTaps()
+  const h = halfbandTaps(quality)
   const T = h.length
   const reach = 2 * T - 1 // furthest input offset used
-  for (let m = 0; m < out.length; m++) {
+  // Interior: every tap is inside the signal. Split off so the hot loop has no edge checks.
+  const mFirst = Math.min(out.length, Math.ceil(reach / 2))
+  const mLast = Math.max(mFirst, Math.floor((n - 1 - reach) / 2) + 1) // exclusive
+  if (T === 6) {
+    // Hand-unrolled 6-pair version for the 'fast' filter (the internal 22 -> 11 kHz step).
+    const h0 = h[0]
+    const h1 = h[1]
+    const h2 = h[2]
+    const h3 = h[3]
+    const h4 = h[4]
+    const h5 = h[5]
+    for (let m = mFirst; m < mLast; m++) {
+      const c = 2 * m
+      out[m] =
+        0.5 * x[c] +
+        h0 * (x[c - 1] + x[c + 1]) +
+        h1 * (x[c - 3] + x[c + 3]) +
+        h2 * (x[c - 5] + x[c + 5]) +
+        h3 * (x[c - 7] + x[c + 7]) +
+        h4 * (x[c - 9] + x[c + 9]) +
+        h5 * (x[c - 11] + x[c + 11])
+    }
+  } else {
+    for (let m = mFirst; m < mLast; m++) {
+      const c = 2 * m
+      let acc = 0.5 * x[c]
+      for (let j = 0, k = 1; j < T; j++, k += 2) acc += h[j] * (x[c - k] + x[c + k])
+      out[m] = acc
+    }
+  }
+  // Edges: treat samples outside the signal as silence.
+  const edge = (m: number): void => {
     const c = 2 * m
     let acc = 0.5 * x[c]
-    if (c - reach >= 0 && c + reach < n) {
-      for (let j = 0; j < T; j++) {
-        const k = 2 * j + 1
-        acc += h[j] * (x[c - k] + x[c + k])
-      }
-    } else {
-      // Near the edges, treat samples outside the signal as silence.
-      for (let j = 0; j < T; j++) {
-        const k = 2 * j + 1
-        const a = c - k >= 0 ? x[c - k] : 0
-        const b = c + k < n ? x[c + k] : 0
-        acc += h[j] * (a + b)
-      }
+    for (let j = 0, k = 1; j < T; j++, k += 2) {
+      const a = c - k >= 0 ? x[c - k] : 0
+      const b = c + k < n ? x[c + k] : 0
+      acc += h[j] * (a + b)
     }
     out[m] = acc
   }
+  for (let m = 0; m < mFirst; m++) edge(m)
+  for (let m = mLast; m < out.length; m++) edge(m)
   return out
 }

@@ -71,15 +71,18 @@ export function fft(re: Float64Array, im: Float64Array, inverse = false): void {
     }
   }
 
-  // Step 2: butterflies. At each pass we merge DFTs of length `half` into DFTs of length `size`:
-  //   X[k]        = E[k] + W^k * O[k]
-  //   X[k + half] = E[k] - W^k * O[k]
-  // where E/O are the DFTs of the even/odd halves and W = e^(-2*pi*i/size).
+  // Step 2: butterflies. A radix-2 pass merges pairs of DFTs of length h into DFTs of length 2h:
+  //   X[k]     = E[k] + W^k * O[k]
+  //   X[k + h] = E[k] - W^k * O[k]
+  // where E/O are the DFTs of the even/odd halves and W = e^(-2*pi*i/(2h)).
+  // We do two such passes at a time ("radix 2^2"): each group of 4 values is loaded once,
+  // pushed through both passes in local variables, and stored once. The arithmetic is the same
+  // as two separate passes, but memory traffic (the real bottleneck in JS) is halved.
   const sign = inverse ? 1 : -1
-  let size = 2
+  let m = 1 // length of the sub-DFTs completed so far
   if (n >= 4) {
-    // The first two passes only use the twiddles 1 and -i (or +i for the inverse), so we do
-    // them together as one multiplication-free 4-point DFT per group of 4.
+    // The first two passes only use the twiddles 1 and -i (or +i for the inverse), so they
+    // become one multiplication-free 4-point DFT per group of 4.
     for (let a = 0; a < n; a += 4) {
       const r0 = re[a] + re[a + 1]
       const i0 = im[a] + im[a + 1]
@@ -99,42 +102,66 @@ export function fft(re: Float64Array, im: Float64Array, inverse = false): void {
       re[a + 3] = r1 - r3
       im[a + 3] = i1 - i3
     }
-    size = 8
+    m = 4
   }
-  for (; size <= n; size <<= 1) {
-    const half = size >> 1
-    const step = n / size // twiddle table stride for this pass
-    if (half >= step) {
-      // Late passes: few long groups. Walk each group, stepping through the twiddles.
-      for (let start = 0; start < n; start += size) {
-        for (let k = 0, t = 0; k < half; k++, t += step) {
-          const wr = cos[t]
-          const wi = sign * sin[t]
-          const a = start + k
-          const b = a + half
-          const xr = re[b] * wr - im[b] * wi
-          const xi = re[b] * wi + im[b] * wr
-          re[b] = re[a] - xr
-          im[b] = im[a] - xi
-          re[a] += xr
-          im[a] += xi
-        }
+  // Paired passes: sub-DFTs of length m -> 2m -> 4m. Values sit at s, s+m, s+2m, s+3m.
+  //   pass 1 (twiddle w1 = W_2m^k):   b0,b1 = a0 +/- w1*a1     b2,b3 = a2 +/- w1*a3
+  //   pass 2 (twiddle w2 = W_4m^k):   y0,y2 = b0 +/- w2*b2     y1,y3 = b1 +/- (-i)*w2*b3
+  // (the second butterfly's twiddle is W_4m^(k+m) = W_4m^k * W_4m^m = w2 * -i).
+  for (; 4 * m <= n; m *= 4) {
+    const step = n / (4 * m) // twiddle table stride for W_4m
+    for (let k = 0; k < m; k++) {
+      const w1r = cos[2 * k * step]
+      const w1i = sign * sin[2 * k * step]
+      const w2r = cos[k * step]
+      const w2i = sign * sin[k * step]
+      for (let i0 = k; i0 < n; i0 += 4 * m) {
+        const i1 = i0 + m
+        const i2 = i1 + m
+        const i3 = i2 + m
+        let xr = re[i1] * w1r - im[i1] * w1i
+        let xi = re[i1] * w1i + im[i1] * w1r
+        const b0r = re[i0] + xr
+        const b0i = im[i0] + xi
+        const b1r = re[i0] - xr
+        const b1i = im[i0] - xi
+        xr = re[i3] * w1r - im[i3] * w1i
+        xi = re[i3] * w1i + im[i3] * w1r
+        const b2r = re[i2] + xr
+        const b2i = im[i2] + xi
+        const b3r = re[i2] - xr
+        const b3i = im[i2] - xi
+        const c2r = b2r * w2r - b2i * w2i
+        const c2i = b2r * w2i + b2i * w2r
+        const dr = b3r * w2r - b3i * w2i
+        const di = b3r * w2i + b3i * w2r
+        const c3r = -sign * di // (dr + i*di) * (sign * i)
+        const c3i = sign * dr
+        re[i0] = b0r + c2r
+        im[i0] = b0i + c2i
+        re[i2] = b0r - c2r
+        im[i2] = b0i - c2i
+        re[i1] = b1r + c3r
+        im[i1] = b1i + c3i
+        re[i3] = b1r - c3r
+        im[i3] = b1i - c3i
       }
-    } else {
-      // Early passes: many short groups. Loop over twiddles on the outside so each W^k is
-      // loaded once per pass.
-      for (let k = 0; k < half; k++) {
-        const wr = cos[k * step]
-        const wi = sign * sin[k * step]
-        for (let a = k; a < n; a += size) {
-          const b = a + half
-          const xr = re[b] * wr - im[b] * wi
-          const xi = re[b] * wi + im[b] * wr
-          re[b] = re[a] - xr
-          im[b] = im[a] - xi
-          re[a] += xr
-          im[a] += xi
-        }
+    }
+  }
+  // An odd number of passes leaves one ordinary radix-2 pass (or the only pass when n = 2).
+  if (m < n) {
+    const step = n / (2 * m)
+    for (let k = 0; k < m; k++) {
+      const wr = cos[k * step]
+      const wi = sign * sin[k * step]
+      for (let a = k; a < n; a += 2 * m) {
+        const b = a + m
+        const xr = re[b] * wr - im[b] * wi
+        const xi = re[b] * wi + im[b] * wr
+        re[b] = re[a] - xr
+        im[b] = im[a] - xi
+        re[a] += xr
+        im[a] += xi
       }
     }
   }
@@ -221,16 +248,72 @@ export class RealFft {
 
   /** Magnitude spectrum |X[k]| of `frame`, written into `out` (length >= N/2 + 1). */
   magnitude(frame: Float64Array | Float32Array, out: Float32Array | Float64Array): void {
-    this.forward(frame)
-    const { outRe, outIm } = this
-    for (let k = 0; k < this.bins; k++) out[k] = Math.sqrt(outRe[k] * outRe[k] + outIm[k] * outIm[k])
+    this.power(frame, out)
+    for (let k = 0; k < this.bins; k++) out[k] = Math.sqrt(out[k])
   }
 
   /** Power spectrum |X[k]|^2 of `frame`, written into `out` (length >= N/2 + 1). */
   power(frame: Float64Array | Float32Array, out: Float32Array | Float64Array): void {
-    this.forward(frame)
-    const { outRe, outIm } = this
-    for (let k = 0; k < this.bins; k++) out[k] = outRe[k] * outRe[k] + outIm[k] * outIm[k]
+    const m = this.size / 2
+    const { zr, zi } = this
+    for (let i = 0; i < m; i++) {
+      zr[i] = frame[2 * i]
+      zi[i] = frame[2 * i + 1]
+    }
+    this.untanglePower(out)
+  }
+
+  /**
+   * Power spectrum of the Hann-windowed (or any window) frame of `signal` centred on sample
+   * `center`, zero-padded past the ends. Windowing, packing and transforming happen in one go,
+   * so no intermediate frame buffer is needed. This is the STFT inner loop.
+   */
+  powerAt(signal: Float32Array, center: number, window: Float64Array, out: Float32Array | Float64Array): void {
+    const m = this.size / 2
+    const { zr, zi } = this
+    const start = center - m
+    if (start >= 0 && start + this.size <= signal.length) {
+      for (let i = 0, j = start; i < m; i++, j += 2) {
+        zr[i] = signal[j] * window[2 * i]
+        zi[i] = signal[j + 1] * window[2 * i + 1]
+      }
+    } else {
+      const n = signal.length
+      for (let i = 0; i < m; i++) {
+        const j = start + 2 * i
+        zr[i] = j >= 0 && j < n ? signal[j] * window[2 * i] : 0
+        zi[i] = j + 1 >= 0 && j + 1 < n ? signal[j + 1] * window[2 * i + 1] : 0
+      }
+    }
+    this.untanglePower(out)
+  }
+
+  /** FFT of the packed input in zr/zi, then untangle straight into |X[k]|^2. */
+  private untanglePower(out: Float32Array | Float64Array): void {
+    const m = this.size / 2
+    const { zr, zi, cos, sin } = this
+    fft(zr, zi)
+    // DC and Nyquist are real: X[0] = Z0r + Z0i, X[N/2] = Z0r - Z0i.
+    const dc = zr[0] + zi[0]
+    const ny = zr[0] - zi[0]
+    out[0] = dc * dc
+    out[m] = ny * ny
+    for (let k = 1; k < m; k++) {
+      const kb = m - k
+      const ar = zr[k]
+      const ai = zi[k]
+      const br = zr[kb]
+      const bi = zi[kb]
+      const er = ar + br // 2 * Xe
+      const ei = ai - bi
+      const or = ai + bi // 2 * Xo
+      const oi = br - ar
+      const wr = cos[k]
+      const wi = -sin[k]
+      const xr = 0.5 * (er + wr * or - wi * oi)
+      const xi = 0.5 * (ei + wr * oi + wi * or)
+      out[k] = xr * xr + xi * xi
+    }
   }
 }
 

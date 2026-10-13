@@ -1,8 +1,10 @@
 // Musical key detection (Krumhansl-Schmuckler style template matching).
 //
 // Pipeline
-//   1. STFT with long frames (8192 samples at 22 kHz = 0.37 s, 2.7 Hz bin spacing) so that
-//      neighbouring semitones are resolvable down to ~50 Hz. Hop = half a frame.
+//   1. STFT with long frames (4096 samples at 11 kHz = 0.37 s, 2.7 Hz bin spacing) so that
+//      neighbouring semitones are resolvable down to ~50 Hz. Frames don't overlap: averaged
+//      over a whole track, the statistics are just as good, at half the cost. We run on the
+//      half-rate (~11 kHz) signal since notes above 2.1 kHz are not used anyway.
 //   2. Peak picking: keep only spectral local maxima that stand clearly above the local average
 //      spectrum. Tonal components (notes and their harmonics) give sharp peaks; drums and noise
 //      give broad humps, so this is a cheap way to ignore percussion.
@@ -36,7 +38,7 @@
 // bar lines.
 
 import type { BeatGrid } from '../../../shared/types'
-import { RealFft, fillFrame, hannWindow } from './fft'
+import { RealFft, hannWindow } from './fft'
 
 /** Krumhansl-Kessler key profiles, index 0 = tonic. */
 const MAJOR_PROFILE = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
@@ -188,10 +190,9 @@ export function estimateKey(a: ChromaAnalysis, grid?: BeatGrid | null): number |
 
 export function analyzeChroma(x: Float32Array, sampleRate: number): ChromaAnalysis {
   const N = Math.pow(2, Math.max(8, Math.round(Math.log2((sampleRate * 8192) / 22050))))
-  const hop = N / 2
+  const hop = N // no overlap: key statistics don't need it, and it halves the work
   const fft = new RealFft(N)
   const window = hannWindow(N)
-  const frame = new Float64Array(N)
   const mag = new Float32Array(fft.bins)
   const prefix = new Float64Array(fft.bins + 1)
   const nFrames = x.length === 0 ? 0 : Math.floor((x.length - 1) / hop) + 1
@@ -199,17 +200,17 @@ export function analyzeChroma(x: Float32Array, sampleRate: number): ChromaAnalys
   const kLo = Math.max(2, Math.floor(F_PICK / binHz))
   const kHi = Math.min(fft.bins - 2, Math.ceil(F_MAX / binHz))
   const avgRadius = Math.max(4, Math.round(40 / binHz)) // local average over +/- 40 Hz
+  const kTop = Math.min(fft.bins, kHi + avgRadius + 1) // highest bin we ever look at
   const norm = 4 / N
   const peaks = new PeakList()
 
   // Pass 1: STFT + peak picking.
   for (let j = 0; j < nFrames; j++) {
-    fillFrame(x, j * hop, window, frame)
-    fft.magnitude(frame, mag)
+    fft.powerAt(x, j * hop, window, mag)
     prefix[0] = 0
     let frameMax = 0
-    for (let k = 0; k < fft.bins; k++) {
-      const m = mag[k] * norm
+    for (let k = 0; k < kTop; k++) {
+      const m = Math.sqrt(mag[k]) * norm
       mag[k] = m
       prefix[k + 1] = prefix[k] + m
       if (k >= kLo && k <= kHi && m > frameMax) frameMax = m

@@ -2,7 +2,7 @@
 //
 // Usage from the main thread:
 //   const worker = new Worker(new URL('./analysis/worker.ts', import.meta.url), { type: 'module' })
-//   const req: AnalysisRequest = { id, mono, sampleRate, bpmLow }
+//   const req: AnalysisRequest = { id, mono, sampleRate, bpmLow, bpmHint }
 //   worker.postMessage(req, [mono.buffer])   // transfer instead of copying the samples
 //   worker.onmessage = (e: MessageEvent<AnalysisResponse>) => { ... }
 
@@ -16,6 +16,8 @@ export interface AnalysisRequest {
   sampleRate: number
   /** Tempo range lower bound: tempi are folded into [bpmLow, 2 * bpmLow). */
   bpmLow: number
+  /** Optional BPM from the file's tags (e.g. ID3 TBPM); null/undefined when absent. */
+  bpmHint?: number | null
 }
 
 export type AnalysisResponse =

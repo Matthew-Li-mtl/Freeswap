@@ -14,9 +14,9 @@ interface WorkerScope {
 const scope = self as unknown as WorkerScope
 
 scope.onmessage = (e) => {
-  const { id, mono, sampleRate, bpmLow } = e.data
+  const { id, mono, sampleRate, bpmLow, bpmHint } = e.data
   try {
-    const result = analyzeAudio(mono, sampleRate, { bpmLow })
+    const result = analyzeAudio(mono, sampleRate, { bpmLow, bpmHint })
     scope.postMessage({ id, result }, [result.waveform.buffer])
   } catch (err) {
     scope.postMessage({ id, error: err instanceof Error ? err.message : String(err) })

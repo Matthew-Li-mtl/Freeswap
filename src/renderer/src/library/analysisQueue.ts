@@ -108,7 +108,9 @@ class AnalysisQueue {
       rate = job.buffer.sampleRate
     } else {
       // An OfflineAudioContext decodes to its own sample rate (see ANALYSIS_RATE).
-      const off = new OfflineAudioContext(1, 1, ANALYSIS_RATE)
+      // Opus (YouTube downloads) is always 48 kHz internally, so decode it at 48 kHz.
+      const decodeRate = /\.(webm|opus|ogg)$/i.test(track.path) ? 48000 : ANALYSIS_RATE
+      const off = new OfflineAudioContext(1, 1, decodeRate)
       const buf = await decodeTrack(track, off)
       mono = mixdown(buf)
       rate = buf.sampleRate
