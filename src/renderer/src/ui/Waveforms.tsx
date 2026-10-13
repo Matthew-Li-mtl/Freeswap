@@ -13,17 +13,56 @@
 import { useEffect, useRef } from 'react'
 import { WAVEFORM_RATE } from '@shared/types'
 import type { DeckState } from '../state/decks'
-import { deck, useDecks } from '../state/decks'
+import { deck } from '../state/decks'
 import { settings, updateSettings } from '../state/settings'
 import { getEngine } from '../audio/engine'
 import { getWaveform } from '../library/waveforms'
 import * as D from '../control/deck'
 import { fitCanvas, onFrame } from './frameLoop'
-import { GridEditor } from './GridEditor'
 
-const BAND_COLORS = ['rgb(255,52,40)', 'rgb(40,220,80)', 'rgb(60,130,255)']
-const BAND_GAIN = [1.0, 1.5, 2.2]
+// Additive colours, deliberately not at full brightness: where all three bands overlap
+// they add up to a light pink instead of pure white, so the colour still tells you
+// something. Red (bass) is the strongest so kicks and basslines stand out.
+const BAND_COLORS = ['rgb(235,38,28)', 'rgb(30,118,42)', 'rgb(26,66,155)']
+// Height multipliers per band (data is linear amplitude 0..255).
+const BAND_GAIN = [1.25, 1.05, 1.5]
 const DECK_COLORS = ['#2fd6b5', '#ff7a59']
+
+/** Zoom limits for the scrolling waveform, in seconds visible across its width. */
+export const ZOOM_MIN = 2
+export const ZOOM_MAX = 20 * 60
+
+// ---- level-of-detail pyramid ----
+// Zoomed far out (e.g. 20 minutes on screen) a single pixel covers hundreds of data
+// columns. Scanning all of them every frame would be wasteful, so we pre-compute
+// "mipmaps": level 1 merges pairs of columns (keeping the max), level 2 merges pairs of
+// level-1 columns, and so on. Drawing picks the level whose columns are about a pixel wide.
+const pyramids = new WeakMap<Uint8Array, Uint8Array[]>()
+
+function mipLevel(data: Uint8Array, level: number): Uint8Array {
+  let levels = pyramids.get(data)
+  if (!levels) {
+    levels = [data]
+    pyramids.set(data, levels)
+  }
+  while (levels.length <= level) {
+    const prev = levels[levels.length - 1]
+    const prevCols = prev.length / 4
+    const cols = Math.ceil(prevCols / 2)
+    const next = new Uint8Array(cols * 4)
+    for (let i = 0; i < cols; i++) {
+      const a = i * 8
+      const hasB = 2 * i + 1 < prevCols
+      for (let b = 0; b < 4; b++) {
+        const va = prev[a + b]
+        const vb = hasB ? prev[a + 4 + b] : 0
+        next[i * 4 + b] = va > vb ? va : vb
+      }
+    }
+    levels.push(next)
+  }
+  return levels[level]
+}
 
 function drawBands(
   g: CanvasRenderingContext2D,
@@ -33,17 +72,24 @@ function drawBands(
   x0: number,
   pxPerSec: number,
   mid: number,
-  half: number
+  half: number,
+  alpha = 1
 ): void {
-  const cols = data.length / 4
   const colW = pxPerSec / WAVEFORM_RATE
-  // When zoomed out, merge columns in fixed groups (aligned to multiples of `group`)
-  // so the picture doesn't shimmer as it scrolls.
-  const group = colW >= 1 ? 1 : Math.ceil(1 / colW)
-  const iStart = Math.max(0, Math.floor((t0 * WAVEFORM_RATE) / group) * group)
-  const iEnd = Math.min(cols, Math.ceil(t1 * WAVEFORM_RATE) + group)
-  const w = Math.max(1, colW * group) + 0.6
+  // Pick the pyramid level whose columns are at least ~1 px wide.
+  const level = colW >= 1 ? 0 : Math.min(20, Math.floor(Math.log2(1 / colW)))
+  const lvl = mipLevel(data, level)
+  const scale = 1 << level // data columns per level column
+  const cols = lvl.length / 4
+  const lColW = colW * scale
+  // Within the level, still merge in fixed aligned groups so the picture doesn't shimmer.
+  const group = lColW >= 1 ? 1 : Math.ceil(1 / lColW)
+  const colsPerSec = WAVEFORM_RATE / scale
+  const iStart = Math.max(0, Math.floor((t0 * colsPerSec) / group) * group)
+  const iEnd = Math.min(cols, Math.ceil(t1 * colsPerSec) + group)
+  const w = Math.max(1, lColW * group) + 0.6
   g.globalCompositeOperation = 'lighter'
+  g.globalAlpha = alpha
   for (let b = 0; b < 3; b++) {
     g.beginPath()
     const gain = BAND_GAIN[b] / 255
@@ -51,17 +97,18 @@ function drawBands(
       let a = 0
       const jEnd = Math.min(cols, i + group)
       for (let j = i; j < jEnd; j++) {
-        const v = data[j * 4 + b]
+        const v = lvl[j * 4 + b]
         if (v > a) a = v
       }
       if (a === 0) continue
       const h = Math.min(1, a * gain) * half
-      const x = x0 + (i / WAVEFORM_RATE) * pxPerSec
+      const x = x0 + (i / colsPerSec) * pxPerSec
       g.rect(x, mid - h, w, h * 2)
     }
     g.fillStyle = BAND_COLORS[b]
     g.fill()
   }
+  g.globalAlpha = 1
   g.globalCompositeOperation = 'source-over'
 }
 
@@ -73,7 +120,6 @@ function mod(a: number, n: number): number {
 
 export function ZoomedWaveform({ d }: { d: number }) {
   const canvas = useRef<HTMLCanvasElement>(null)
-  const gridEdit = useDecks((s) => s.decks[d].gridEdit)
   const drag = useRef<{ x: number } | null>(null)
 
   useEffect(() => {
@@ -109,7 +155,7 @@ export function ZoomedWaveform({ d }: { d: number }) {
       if (s.loop && s.loop.end != null) {
         const xa = toX(s.loop.start)
         const xb = toX(s.loop.end)
-        g.fillStyle = s.loop.active ? 'rgba(255,190,40,0.18)' : 'rgba(255,190,40,0.06)'
+        g.fillStyle = s.loop.active ? 'rgba(255,190,40,0.26)' : 'rgba(255,190,40,0.09)'
         g.fillRect(xa, 0, xb - xa, H)
       }
 
@@ -148,12 +194,7 @@ export function ZoomedWaveform({ d }: { d: number }) {
         g.fillText(String(i + 1), x + 7 * dpr, 10 * dpr)
       })
 
-      // loop in/out markers
-      if (s.loop) {
-        g.fillStyle = '#ffbe28'
-        g.fillRect(toX(s.loop.start) - dpr, 0, 2 * dpr, H)
-        if (s.loop.end != null) g.fillRect(toX(s.loop.end) - dpr, 0, 2 * dpr, H)
-      }
+      drawLoop(g, s, toX, H, dpr)
 
       // playhead
       g.fillStyle = DECK_COLORS[d]
@@ -187,8 +228,8 @@ export function ZoomedWaveform({ d }: { d: number }) {
           drag.current = null
         }}
         onWheel={(e) => {
-          const z = settings().waveformZoom * (e.deltaY > 0 ? 1.15 : 1 / 1.15)
-          void updateSettings({ waveformZoom: Math.max(2, Math.min(40, z)) })
+          const z = settings().waveformZoom * (e.deltaY > 0 ? 1.2 : 1 / 1.2)
+          void updateSettings({ waveformZoom: Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z)) })
         }}
       />
       <div
@@ -205,7 +246,6 @@ export function ZoomedWaveform({ d }: { d: number }) {
       >
         {d + 1}
       </div>
-      {gridEdit && <GridEditor d={d} />}
     </div>
   )
 }
@@ -232,28 +272,84 @@ function drawGrid(
   if (!s.grid) return
   const beat = 60 / s.grid.bpm
   const beatPx = beat * pxPerSec
-  const k0 = Math.ceil((t0 - s.grid.anchor) / beat)
-  const k1 = Math.floor((t1 - s.grid.anchor) / beat)
-  for (let k = k0; k <= k1; k++) {
+  // Skip whole marker classes that would be too dense to read when zoomed far out.
+  const showBeats = beatPx >= 7 * dpr
+  const showBars = beatPx * 4 >= 7 * dpr
+  const step = showBeats ? 1 : showBars ? 4 : 32
+  // Only draw markers inside the track itself (and the visible window).
+  const from = Math.max(t0, 0)
+  const to = Math.min(t1, s.duration)
+  const k0 = Math.ceil((from - s.grid.anchor) / beat / step) * step
+  const k1 = Math.floor((to - s.grid.anchor) / beat)
+  for (let k = k0; k <= k1; k += step) {
     const phrase = mod(k, 32) === 0
     const bar = mod(k, 4) === 0
-    // Skip markers that would be too dense to read when zoomed far out.
-    if (!bar && beatPx < 6 * dpr) continue
-    if (!phrase && beatPx * 4 < 6 * dpr) continue
     const x = Math.round(toX(s.grid.anchor + k * beat))
     if (phrase) {
-      g.fillStyle = 'rgba(255,255,255,0.85)'
+      // Thickest: a red glow, a bright core and solid caps top and bottom.
+      g.fillStyle = 'rgba(255,77,109,0.35)'
+      g.fillRect(x - 4 * dpr, 0, 8 * dpr, H)
+      g.fillStyle = 'rgba(255,255,255,0.95)'
       g.fillRect(x - 1.5 * dpr, 0, 3 * dpr, H)
       g.fillStyle = '#ff4d6d'
-      g.fillRect(x - 1.5 * dpr, 0, 3 * dpr, 5 * dpr)
-      g.fillRect(x - 1.5 * dpr, H - 5 * dpr, 3 * dpr, 5 * dpr)
+      g.fillRect(x - 4 * dpr, 0, 8 * dpr, 7 * dpr)
+      g.fillRect(x - 4 * dpr, H - 7 * dpr, 8 * dpr, 7 * dpr)
     } else if (bar) {
-      g.fillStyle = 'rgba(255,255,255,0.5)'
+      g.fillStyle = 'rgba(255,255,255,0.72)'
       g.fillRect(x - dpr, 0, 2 * dpr, H)
+      g.fillRect(x - 3 * dpr, 0, 6 * dpr, 4 * dpr)
+      g.fillRect(x - 3 * dpr, H - 4 * dpr, 6 * dpr, 4 * dpr)
     } else {
-      g.fillStyle = 'rgba(255,255,255,0.22)'
+      g.fillStyle = 'rgba(255,255,255,0.38)'
       g.fillRect(x - 0.5 * dpr, 0, Math.max(1, dpr), H)
     }
+  }
+}
+
+/** Loop region: a bright frame (solid when active, dashed when just set) plus a label. */
+function drawLoop(g: CanvasRenderingContext2D, s: DeckState, toX: (t: number) => number, H: number, dpr: number): void {
+  if (!s.loop) return
+  const xa = toX(s.loop.start)
+  const color = '#ffbe28'
+  g.fillStyle = color
+  g.fillRect(xa - 1.5 * dpr, 0, 3 * dpr, H)
+  if (s.loop.end == null) {
+    // Only IN is set: a flag pointing right.
+    g.beginPath()
+    g.moveTo(xa, 0)
+    g.lineTo(xa + 10 * dpr, 5 * dpr)
+    g.lineTo(xa, 10 * dpr)
+    g.fill()
+    return
+  }
+  const xb = toX(s.loop.end)
+  g.fillRect(xb - 1.5 * dpr, 0, 3 * dpr, H)
+  if (s.loop.active) {
+    g.fillRect(xa, 0, xb - xa, 4 * dpr)
+    g.fillRect(xa, H - 4 * dpr, xb - xa, 4 * dpr)
+  } else {
+    g.setLineDash([6 * dpr, 4 * dpr])
+    g.strokeStyle = color
+    g.lineWidth = 2 * dpr
+    g.beginPath()
+    g.moveTo(xa, dpr)
+    g.lineTo(xb, dpr)
+    g.moveTo(xa, H - dpr)
+    g.lineTo(xb, H - dpr)
+    g.stroke()
+    g.setLineDash([])
+  }
+  // Label with the loop length in beats.
+  if (xb - xa > 34 * dpr && s.grid) {
+    const beats = (s.loop.end - s.loop.start) / (60 / s.grid.bpm)
+    const text = beats >= 1 ? `LOOP ${+beats.toFixed(2)}` : `LOOP 1/${Math.round(1 / beats)}`
+    g.font = `bold ${10 * dpr}px Segoe UI`
+    g.textAlign = 'left'
+    const tw = g.measureText(text).width + 8 * dpr
+    g.fillStyle = s.loop.active ? color : 'rgba(255,190,40,0.6)'
+    g.fillRect(xa + 1.5 * dpr, 4 * dpr, tw, 14 * dpr)
+    g.fillStyle = '#0d0f13'
+    g.fillText(text, xa + 5.5 * dpr, 15 * dpr)
   }
 }
 
@@ -283,7 +379,9 @@ export function OverviewWaveform({ d }: { d: number }) {
         img.width = W
         img.height = H
         const ig = img.getContext('2d')!
-        drawBands(ig, data, 0, s.duration, 0, W / s.duration, H / 2, H / 2 - dpr)
+        // Toned down further than the zoomed view: squeezed this much, almost every
+        // column contains all three bands, which would otherwise turn white.
+        drawBands(ig, data, 0, s.duration, 0, W / s.duration, H / 2, H / 2 - dpr, 0.8)
         cache.current = { key, img }
       }
       if (data && cache.current) g.drawImage(cache.current.img, 0, 0)
@@ -293,16 +391,21 @@ export function OverviewWaveform({ d }: { d: number }) {
       // phrase ticks along the bottom
       if (s.grid) {
         const phrase = (32 * 60) / s.grid.bpm
-        g.fillStyle = 'rgba(255,255,255,0.35)'
+        g.fillStyle = 'rgba(255,120,140,0.75)'
         for (let t = s.grid.anchor; t < s.duration; t += phrase)
-          g.fillRect(toX(t), H - 4 * dpr, Math.max(1, dpr), 4 * dpr)
+          g.fillRect(toX(t) - 0.5 * dpr, H - 6 * dpr, Math.max(1.5, 1.5 * dpr), 6 * dpr)
       }
       // played part
       g.fillStyle = 'rgba(10,11,15,0.55)'
       g.fillRect(0, 0, toX(pos), H)
       if (s.loop && s.loop.end != null) {
-        g.fillStyle = s.loop.active ? 'rgba(255,190,40,0.35)' : 'rgba(255,190,40,0.15)'
-        g.fillRect(toX(s.loop.start), 0, Math.max(2, toX(s.loop.end) - toX(s.loop.start)), H)
+        const xa = toX(s.loop.start)
+        const w = Math.max(3 * dpr, toX(s.loop.end) - xa)
+        g.fillStyle = s.loop.active ? 'rgba(255,190,40,0.45)' : 'rgba(255,190,40,0.2)'
+        g.fillRect(xa, 0, w, H)
+        g.fillStyle = '#ffbe28'
+        g.fillRect(xa, 0, w, 3 * dpr)
+        g.fillRect(xa, H - 3 * dpr, w, 3 * dpr)
       }
       g.fillStyle = '#ffb547'
       tri(g, toX(s.cuePoint), H, 5 * dpr, -1)

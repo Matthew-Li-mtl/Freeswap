@@ -7,6 +7,7 @@ import { formatKey } from '@shared/musicKey'
 import { useLibrary, visibleTracks, type SortKey } from '../state/library'
 import { useSettings } from '../state/settings'
 import { useDecks } from '../state/decks'
+import { useUi } from '../state/ui'
 import * as L from '../control/library'
 import { loadTrack } from '../control/deck'
 import { api } from '../platform'
@@ -149,6 +150,7 @@ function FolderNode({
         }}
         onDropFiles={(e) => void importDroppedFiles(e, folder.id)}
         onDropFolder={(id) => void L.moveFolder(id, folder.id, children.length)}
+        onAdd={() => void onNew(folder.id)}
       />
       {expanded &&
         children.map((c) => (
@@ -174,6 +176,7 @@ function TreeRow(props: {
   onDropTracks?: (ids: number[], e: React.DragEvent) => void
   onDropFiles?: (e: React.DragEvent) => void
   onDropFolder?: (id: number) => void
+  onAdd?: () => void
 }) {
   const [over, setOver] = useState(false)
   const style: CSSProperties = {
@@ -190,6 +193,7 @@ function TreeRow(props: {
   }
   return (
     <div
+      className="tree-row"
       style={style}
       onClick={props.onClick}
       onDoubleClick={props.onDoubleClick}
@@ -248,6 +252,18 @@ function TreeRow(props: {
       ) : (
         <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {props.label}
+        </span>
+      )}
+      {props.onAdd && (
+        <span
+          className="row-add"
+          title="New sub-folder inside this one"
+          onClick={(e) => {
+            e.stopPropagation()
+            props.onAdd?.()
+          }}
+        >
+          +
         </span>
       )}
       <span style={{ color: 'var(--text-faint)', fontSize: 10 }}>{props.count}</span>
@@ -511,6 +527,7 @@ function TrackTable() {
           ]
         : []),
       { separator: true },
+      { label: 'Edit info (title, artist…)', onClick: () => useUi.setState({ editTrack: t.id }) },
       { label: 'Show in Explorer', onClick: () => void api.library.showInFolder(t.id), disabled: !t.available },
       ...(t.available ? [] : [{ label: 'Locate missing file…', onClick: () => void L.relocate(t.id) }]),
       { label: `Re-analyse (${ids.length})`, onClick: () => void L.reanalyzeTracks(ids) },
@@ -587,6 +604,7 @@ function TrackTable() {
             return (
               <div
                 key={t.id}
+                data-track-id={t.id}
                 draggable
                 onDragStart={(e) => {
                   const ids = sel ? state.selection : [t.id]

@@ -316,3 +316,22 @@ select option {
   font-size: 9px;
   color: var(--text-dim);
 }
+
+/* ---------- folder tree ---------- */
+
+.tree-row .row-add {
+  opacity: 0;
+  width: 16px;
+  height: 16px;
+  line-height: 14px;
+  text-align: center;
+  border-radius: 3px;
+  color: var(--text-dim);
+}
+.tree-row:hover .row-add {
+  opacity: 1;
+}
+.tree-row .row-add:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}

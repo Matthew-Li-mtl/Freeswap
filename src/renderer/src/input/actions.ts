@@ -14,6 +14,7 @@
 import * as D from '../control/deck'
 import * as M from '../control/mixer'
 import { BEAT_DIVISIONS, FX_LIST } from '../audio/effects'
+import { TEMPO_RANGES } from '@shared/types'
 import { deck, useDecks, type PadMode } from '../state/decks'
 
 export interface ActionDef {
@@ -72,6 +73,7 @@ function deckActions(d: number): ActionDef[] {
   press('loopDouble', 'Loop ×2', () => D.loopDouble(d))
   press('loopHalve', 'Loop ½', () => D.loopHalve(d))
   press('autoLoop', '4-beat loop', () => D.autoLoop(d, 4))
+  press('loopAnchor', 'Loop resize: keep start / keep end', () => D.toggleLoopAnchor(d))
 
   // Mixer layer
   for (const band of ['high', 'mid', 'low'] as const) {
@@ -112,7 +114,7 @@ function deckActions(d: number): ActionDef[] {
     })
   }
   press('tempoRange', 'Tempo range (cycle)', () => {
-    const ranges = [0.06, 0.1, 0.16, 0.5]
+    const ranges = TEMPO_RANGES
     D.setTempoRange(d, ranges[(ranges.indexOf(deck(d).tempoRange) + 1) % ranges.length])
   })
   const modes: [PadMode, string][] = [
@@ -129,8 +131,8 @@ function deckActions(d: number): ActionDef[] {
   // Grid layer
   press('grid.edit', 'Beat grid editor', () => D.toggleGridEdit(d))
   press('grid.tap', 'Tap tempo', () => D.tapTempo(d))
-  press('grid.earlier', 'Grid 5 ms earlier', () => D.shiftGrid(d, -5))
-  press('grid.later', 'Grid 5 ms later', () => D.shiftGrid(d, 5))
+  press('grid.earlier', 'Grid 10 ms earlier', () => D.shiftGrid(d, -10))
+  press('grid.later', 'Grid 10 ms later', () => D.shiftGrid(d, 10))
   press('grid.downbeat', 'Set beat 1 here', () => D.setDownbeatHere(d))
   press('grid.beatLeft', 'Downbeat 1 beat earlier', () => D.shiftDownbeat(d, -1))
   press('grid.beatRight', 'Downbeat 1 beat later', () => D.shiftDownbeat(d, 1))
@@ -344,7 +346,8 @@ const DECK1_LAYOUT: Record<string, string> = {
   'fx1.length': 'AltLeft+KeyZ',
   'fx2.length': 'AltLeft+KeyX',
   'fx3.length': 'AltLeft+KeyC',
-  tempoRange: 'AltLeft+KeyV'
+  tempoRange: 'AltLeft+KeyV',
+  loopAnchor: 'AltLeft+KeyG'
 }
 
 const GLOBAL_LAYOUT: Record<string, string[]> = {

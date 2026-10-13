@@ -28,6 +28,8 @@ interface TrackRow {
   source: string
   source_url: string | null
   has_artwork: number
+  tag_bpm: number | null
+  tag_key: number | null
   added_at: number
 }
 
@@ -47,6 +49,8 @@ export interface NewTrack {
   source: TrackSource
   sourceUrl: string | null
   sourceId: string | null
+  tagBpm: number | null
+  tagKey: number | null
 }
 
 export class LibraryRepository {
@@ -86,7 +90,9 @@ export class LibraryRepository {
       available: this.available.get(r.id) ?? true,
       fileSize: r.file_size,
       addedAt: r.added_at,
-      hasArtwork: r.has_artwork === 1
+      hasArtwork: r.has_artwork === 1,
+      tagBpm: r.tag_bpm,
+      tagKey: r.tag_key
     }
   }
 
@@ -129,8 +135,8 @@ export class LibraryRepository {
     const info = this.db
       .prepare(
         `INSERT INTO tracks (path, volume_serial, rel_path, file_size, file_mtime, title, artist,
-           album, genre, year, comment, duration, source, source_url, source_id, added_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           album, genre, year, comment, duration, source, source_url, source_id, added_at, tag_bpm, tag_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         t.path,
@@ -148,7 +154,9 @@ export class LibraryRepository {
         t.source,
         t.sourceUrl,
         t.sourceId,
-        Date.now()
+        Date.now(),
+        t.tagBpm,
+        t.tagKey
       )
     const id = Number(info.lastInsertRowid)
     this.available.set(id, true)
@@ -306,6 +314,19 @@ export class LibraryRepository {
       .prepare('INSERT INTO folders (parent_id, name, position) VALUES (?, ?, ?)')
       .run(parentId, name, pos.p)
     return { id: Number(info.lastInsertRowid), parentId, name, position: pos.p }
+  }
+
+  /** A direct child folder with this name (case-insensitive), if one exists. */
+  findFolder(parentId: number | null, name: string): Folder | null {
+    const r = this.db
+      .prepare('SELECT id, parent_id, name, position FROM folders WHERE parent_id IS ? AND name = ? COLLATE NOCASE')
+      .get(parentId, name) as { id: number; parent_id: number | null; name: string; position: number } | undefined
+    return r ? { id: r.id, parentId: r.parent_id, name: r.name, position: r.position } : null
+  }
+
+  /** Find-or-create a child folder by name. */
+  ensureFolder(parentId: number | null, name: string): Folder {
+    return this.findFolder(parentId, name) ?? this.createFolder(parentId, name)
   }
 
   renameFolder(id: number, name: string): void {

@@ -2,7 +2,7 @@
 
 import type { Track } from '@shared/types'
 import { api } from '../platform'
-import { upsertTracks, setMembership, useLibrary } from '../state/library'
+import { upsertTracks, reloadFolders, useLibrary } from '../state/library'
 import { analysisQueue } from '../library/analysisQueue'
 import { toast } from '../state/ui'
 
@@ -39,10 +39,7 @@ export async function importPaths(paths: string[], folderId: number | null): Pro
   const tracks = await api.library.importPaths(paths, folderId)
   useLibrary.setState({ importing: null })
   upsertTracks(tracks)
-  if (folderId != null) {
-    const ids = await api.folders.addTracks(folderId, [])
-    setMembership(folderId, ids)
-  }
+  await reloadFolders()
   const fresh = tracks.filter((t) => !t.analyzed)
   analysisQueue.enqueue(fresh.map((t) => t.id))
   if (tracks.length) toast(`Imported ${tracks.length} track${tracks.length === 1 ? '' : 's'}`)

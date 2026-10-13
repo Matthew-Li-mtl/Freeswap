@@ -26,13 +26,7 @@ export function registerIpc(d: Deps): void {
   d.library.on('tracksChanged', (tracks: Track[]) => send(IPC.libraryTracksChanged, tracks))
 
   const importInto = async (paths: string[], folderId: number | null): Promise<Track[]> => {
-    const tracks = await d.library.importPaths(paths, (p) => send(IPC.libraryImportProgress, p))
-    if (folderId != null && tracks.length)
-      d.repo.addToFolder(
-        folderId,
-        tracks.map((t) => t.id)
-      )
-    return tracks
+    return d.library.importPaths(paths, folderId, (p) => send(IPC.libraryImportProgress, p))
   }
 
   ipcMain.handle(IPC.librarySnapshot, () => d.library.snapshot())

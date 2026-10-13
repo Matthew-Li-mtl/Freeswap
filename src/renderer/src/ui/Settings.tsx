@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { TEMPO_RANGES } from '@shared/types'
 import { useSettings, updateSettings } from '../state/settings'
 import { useUi, toast } from '../state/ui'
 import { AudioEngine, getEngine } from '../audio/engine'
@@ -138,7 +139,7 @@ function GeneralSection() {
             setTempoRange(1, r)
           }}
         >
-          {[0.06, 0.1, 0.16, 0.5].map((r) => (
+          {TEMPO_RANGES.map((r) => (
             <option key={r} value={r}>
               ±{Math.round(r * 100)}%
             </option>

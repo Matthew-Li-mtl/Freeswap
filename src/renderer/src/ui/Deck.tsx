@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, type CSSProperties } from 'react'
 import { formatKey } from '@shared/musicKey'
+import { TEMPO_RANGES } from '@shared/types'
 import { api } from '../platform'
 import { useDecks, deck, type PadMode } from '../state/decks'
 import { useLibrary } from '../state/library'
@@ -17,13 +18,15 @@ import { Jog } from './Jog'
 import { OverviewWaveform } from './Waveforms'
 import { formatTime, onFrame } from './frameLoop'
 import { readDraggedTracks, importDroppedFiles } from './dnd'
+import { useKeyHint } from './keyHint'
+import { GridEditor } from './GridEditor'
 
 const COLORS = ['#2fd6b5', '#ff7a59']
-const TEMPO_RANGES = [0.06, 0.1, 0.16, 0.5]
 
 export function Deck({ d }: { d: number }) {
   const color = COLORS[d]
   const mirrored = d === 1
+  const gridEdit = useDecks((s) => s.decks[d].gridEdit)
   return (
     <div
       className="panel deck"
@@ -43,7 +46,7 @@ export function Deck({ d }: { d: number }) {
       <div style={{ height: 40 }}>
         <OverviewWaveform d={d} />
       </div>
-      <FxRow d={d} />
+      {gridEdit ? <GridEditor d={d} /> : <FxRow d={d} />}
       <div
         style={{
           display: 'flex',
@@ -106,7 +109,16 @@ function DeckHeader({ d }: { d: number }) {
       />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
-          style={{ fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          title={track ? 'Click to edit title / artist' : undefined}
+          onMouseDown={() => track && useUi.setState({ editTrack: track.id })}
+          style={{
+            fontSize: 14,
+            fontWeight: 600,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            cursor: track ? 'pointer' : undefined
+          }}
         >
           {s.loading ? 'Loading…' : (track?.title ?? (s.error || 'No track loaded'))}
         </div>
@@ -151,6 +163,7 @@ function DeckHeader({ d }: { d: number }) {
 
 function FxRow({ d }: { d: number }) {
   const fx = useDecks((s) => s.decks[d].fx)
+  const hint = useKeyHint()
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
       {fx.map((f, i) => {
@@ -175,7 +188,7 @@ function FxRow({ d }: { d: number }) {
               color="var(--deck)"
               style={{ padding: '0 5px', minHeight: 20 }}
               onPress={() => toggleLabel({ kind: 'fx', deck: d, slot: i })}
-              title="Switch this effect on / off"
+              title={hint('Switch this effect on / off', `d${d}.fx${i + 1}.toggle`)}
             >
               FX{i + 1}
             </Btn>
@@ -184,7 +197,7 @@ function FxRow({ d }: { d: number }) {
               tabIndex={-1}
               style={{ flex: 1, minWidth: 0, padding: '1px 2px', fontSize: 11 }}
               onChange={(e) => D.setFxType(d, i, e.target.value as typeof f.type)}
-              title="Effect"
+              title={hint('Effect (next effect)', `d${d}.fx${i + 1}.next`)}
             >
               {FX_LIST.map((x) => (
                 <option key={x.id} value={x.id}>
@@ -199,7 +212,7 @@ function FxRow({ d }: { d: number }) {
                 className="mono"
                 style={{ width: 46, padding: '1px 2px', fontSize: 10 }}
                 onChange={(e) => D.setFxBeats(d, i, Number(e.target.value))}
-                title="Length in beats"
+                title={hint('Length in beats (cycle)', `d${d}.fx${i + 1}.length`)}
               >
                 {BEAT_DIVISIONS.map((b) => (
                   <option key={b} value={b}>
@@ -208,7 +221,12 @@ function FxRow({ d }: { d: number }) {
                 ))}
               </select>
             )}
-            <MiniKnob value={f.depth} onChange={(v) => D.setFxDepth(d, i, v)} lit={f.enabled} />
+            <MiniKnob
+              value={f.depth}
+              onChange={(v) => D.setFxDepth(d, i, v)}
+              lit={f.enabled}
+              title={hint('Effect depth (right-click resets)', [`d${d}.fx${i + 1}.up`, `d${d}.fx${i + 1}.down`])}
+            />
           </div>
         )
       })}
@@ -216,7 +234,17 @@ function FxRow({ d }: { d: number }) {
   )
 }
 
-function MiniKnob({ value, onChange, lit }: { value: number; onChange: (v: number) => void; lit: boolean }) {
+function MiniKnob({
+  value,
+  onChange,
+  lit,
+  title
+}: {
+  value: number
+  onChange: (v: number) => void
+  lit: boolean
+  title: string
+}) {
   const drag = useRef<{ y: number; v: number } | null>(null)
   const a = (-135 + value * 270) * (Math.PI / 180)
   return (
@@ -234,8 +262,12 @@ function MiniKnob({ value, onChange, lit }: { value: number; onChange: (v: numbe
       }}
       onPointerUp={() => (drag.current = null)}
       onWheel={(e) => onChange(Math.max(0, Math.min(1, value - Math.sign(e.deltaY) * 0.04)))}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        onChange(0.5)
+      }}
     >
-      <title>Effect depth</title>
+      <title>{title}</title>
       <circle cx={11} cy={11} r={9.5} fill="#10131a" stroke={lit ? 'var(--deck)' : '#3a4250'} />
       <line
         x1={11}
@@ -254,6 +286,7 @@ function MiniKnob({ value, onChange, lit }: { value: number; onChange: (v: numbe
 
 function TempoColumn({ d }: { d: number }) {
   const s = useDecks((st) => st.decks[d])
+  const hint = useKeyHint()
   const range = s.tempoRange
   const value = (s.tempo + range) / (2 * range) // 0..1, 0 = slowest
   return (
@@ -265,7 +298,7 @@ function TempoColumn({ d }: { d: number }) {
             e.preventDefault()
             toggleLabel({ kind: 'tempo', deck: d })
           }}
-          title="Click to reset tempo to 0 (click again to restore)"
+          title={hint('Click to reset tempo to 0 (click again to restore)', `d${d}.tempo.reset`)}
         >
           Tempo
         </span>
@@ -281,7 +314,7 @@ function TempoColumn({ d }: { d: number }) {
         color="var(--deck)"
         defaultValue={0.5}
         fine={8}
-        title="Tempo (down = faster). Shift for fine, double-click to reset"
+        title={hint('Tempo (down = faster). Shift = fine, right-click resets', [`d${d}.tempo.down`, `d${d}.tempo.up`])}
         onChange={(v) => D.setTempo(d, v * 2 * range - range)}
       />
       <div className="mono" style={{ fontSize: 11, color: s.tempo === 0 ? 'var(--text-dim)' : 'var(--text)' }}>
@@ -290,7 +323,7 @@ function TempoColumn({ d }: { d: number }) {
       </div>
       <Btn
         style={{ minHeight: 18, padding: '0 4px', fontSize: 9, width: 58 }}
-        title="Tempo fader range"
+        title={hint('Tempo fader range', `d${d}.tempoRange`)}
         onPress={() => D.setTempoRange(d, TEMPO_RANGES[(TEMPO_RANGES.indexOf(range) + 1) % TEMPO_RANGES.length])}
       >
         ±{Math.round(range * 100)}%
@@ -300,7 +333,7 @@ function TempoColumn({ d }: { d: number }) {
         color="var(--deck)"
         style={{ width: 58 }}
         onPress={() => D.toggleSync(d)}
-        title="Beat sync to the other deck"
+        title={hint('Beat sync to the other deck', `d${d}.sync`)}
       >
         SYNC
       </Btn>
@@ -309,7 +342,7 @@ function TempoColumn({ d }: { d: number }) {
         color="var(--deck)"
         style={{ width: 58 }}
         onPress={() => D.makeMaster(d)}
-        title="Make this the tempo master"
+        title={hint('Make this the tempo master', `d${d}.master`)}
       >
         MASTER
       </Btn>
@@ -321,16 +354,33 @@ function TempoColumn({ d }: { d: number }) {
 
 function Transport({ d }: { d: number }) {
   const playing = useDecks((s) => s.decks[d].playing)
-  const big: CSSProperties = { width: 52, height: 40, borderRadius: '50%', fontSize: 15 }
+  const hint = useKeyHint()
+  const big: CSSProperties = { width: 58, height: 38, borderRadius: 8, fontSize: 14 }
   return (
     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-      <Btn style={{ width: 34, height: 28 }} onPress={() => D.jumpToStart(d)} title="Jump to start">
+      <Btn
+        style={{ width: 34, height: 28 }}
+        onPress={() => D.jumpToStart(d)}
+        title={hint('Jump to start', `d${d}.start`)}
+      >
         ⏮
       </Btn>
-      <Btn style={big} color="#ffb547" onPress={() => D.cueDown(d)} onRelease={() => D.cueUp(d)} title="Cue">
+      <Btn
+        style={big}
+        color="#ffb547"
+        onPress={() => D.cueDown(d)}
+        onRelease={() => D.cueUp(d)}
+        title={hint('Cue: set / return to the cue point, hold to preview', `d${d}.cue`)}
+      >
         CUE
       </Btn>
-      <Btn style={big} lit={playing} color="var(--ok)" onPress={() => D.togglePlay(d)} title="Play / pause">
+      <Btn
+        style={big}
+        lit={playing}
+        color="var(--ok)"
+        onPress={() => D.togglePlay(d)}
+        title={hint('Play / pause', `d${d}.play`)}
+      >
         {playing ? '❚❚' : '▶'}
       </Btn>
     </div>
@@ -342,6 +392,8 @@ function Transport({ d }: { d: number }) {
 function LoopRow({ d }: { d: number }) {
   const loop = useDecks((s) => s.decks[d].loop)
   const grid = useDecks((s) => s.decks[d].grid)
+  const anchor = useDecks((s) => s.decks[d].loopAnchor)
+  const hint = useKeyHint()
   let lenText = '—'
   if (loop && loop.end != null) {
     const beats = grid ? (loop.end - loop.start) / (60 / grid.bpm) : 0
@@ -357,18 +409,41 @@ function LoopRow({ d }: { d: number }) {
       <span className="label" style={{ width: 30 }}>
         Loop
       </span>
-      <Btn lit={!!loop && loop.end == null} color="#ffbe28" onPress={() => D.loopIn(d)}>
+      <Btn
+        lit={!!loop && loop.end == null}
+        color="#ffbe28"
+        onPress={() => D.loopIn(d)}
+        title={hint('Loop in: mark the loop start', `d${d}.loopIn`)}
+      >
         IN
       </Btn>
-      <Btn onPress={() => D.loopOut(d)}>OUT</Btn>
-      <Btn lit={active} color="#ffbe28" onPress={() => D.reloop(d)} title="Reloop / exit loop">
+      <Btn onPress={() => D.loopOut(d)} title={hint('Loop out: mark the end and start looping', `d${d}.loopOut`)}>
+        OUT
+      </Btn>
+      <Btn lit={active} color="#ffbe28" onPress={() => D.reloop(d)} title={hint('Reloop / exit loop', `d${d}.reloop`)}>
         {active ? 'EXIT' : 'RELOOP'}
       </Btn>
-      <Btn onPress={() => D.autoLoop(d, 4)} title="Loop 4 beats from the current beat">
+      <Btn onPress={() => D.autoLoop(d, 4)} title={hint('Loop 4 beats from the current beat', `d${d}.autoLoop`)}>
         4 BEAT
       </Btn>
-      <Btn onPress={() => D.loopHalve(d)}>½</Btn>
-      <Btn onPress={() => D.loopDouble(d)}>×2</Btn>
+      <Btn onPress={() => D.loopHalve(d)} title={hint('Halve the loop', `d${d}.loopHalve`)}>
+        ½
+      </Btn>
+      <Btn onPress={() => D.loopDouble(d)} title={hint('Double the loop', `d${d}.loopDouble`)}>
+        ×2
+      </Btn>
+      <Btn
+        style={{ padding: '0 5px', fontSize: 9 }}
+        onPress={() => D.toggleLoopAnchor(d)}
+        title={hint(
+          anchor === 'start'
+            ? '½ / ×2 keep the loop START fixed and move the end. Click to keep the END fixed instead.'
+            : '½ / ×2 keep the loop END fixed and move the start. Click to keep the START fixed instead.',
+          `d${d}.loopAnchor`
+        )}
+      >
+        {anchor === 'start' ? '|◀ START' : 'END ▶|'}
+      </Btn>
       <span
         className="mono"
         style={{ marginLeft: 'auto', color: active ? '#ffbe28' : 'var(--text-faint)', fontSize: 11 }}
@@ -390,6 +465,7 @@ const MODES: [PadMode, string][] = [
 
 function Pads({ d }: { d: number }) {
   const s = useDecks((st) => st.decks[d])
+  const hint = useKeyHint()
   useUi((u) => u.samplerVersion) // re-render when samples change
   const samplerInfo = s.padMode === 'sampler' ? getEngine().sampler.info() : []
   return (
@@ -402,6 +478,7 @@ function Pads({ d }: { d: number }) {
             color="var(--deck)"
             style={{ fontSize: 9 }}
             onPress={() => D.setPadMode(d, m)}
+            title={hint(`Pad mode: ${label.toLowerCase()}`, `d${d}.mode.${m}`)}
           >
             {label}
           </Btn>
@@ -444,13 +521,16 @@ function Pads({ d }: { d: number }) {
                 lit={lit}
                 color={color}
                 style={{ height: 36, fontSize: 10, borderRadius: 6, width: '100%', overflow: 'hidden' }}
-                title={
+                title={hint(
                   s.padMode === 'hotcue'
                     ? 'Set / jump to hot cue. Right-click or Shift-click deletes.'
                     : s.padMode === 'sampler'
                       ? 'Play sample. Right-click stops it. Drag a track from the library here to use it as a sample.'
-                      : undefined
-                }
+                      : s.padMode === 'padfx'
+                        ? 'Hold for the effect'
+                        : 'Jump by beats',
+                  `d${d}.pad${i + 1}`
+                )}
                 onPress={(e) => D.padDown(d, i, e.shiftKey)}
                 onRelease={() => D.padUp(d, i)}
               >
@@ -474,13 +554,14 @@ function Pads({ d }: { d: number }) {
 
 function ToggleRow({ d }: { d: number }) {
   const s = useDecks((st) => st.decks[d])
+  const hint = useKeyHint()
   return (
     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
       <Btn
         lit={s.quantize}
         color="var(--accent)"
         onPress={() => D.toggleQuantize(d)}
-        title="Snap cues and loops to the beat grid"
+        title={hint('Snap cues and loops to the beat grid', `d${d}.quantize`)}
       >
         QUANTIZE
       </Btn>
@@ -488,7 +569,7 @@ function ToggleRow({ d }: { d: number }) {
         lit={s.slip}
         color="var(--accent)"
         onPress={() => D.toggleSlip(d)}
-        title="Slip: after a loop/scratch, carry on as if it never happened"
+        title={hint('Slip: after a loop/scratch, carry on as if it never happened', `d${d}.slip`)}
       >
         SLIP
       </Btn>
@@ -496,7 +577,7 @@ function ToggleRow({ d }: { d: number }) {
         lit={s.vinyl}
         color="var(--accent)"
         onPress={() => D.toggleVinyl(d)}
-        title="Vinyl mode: the jog platter scratches"
+        title={hint('Vinyl mode: the jog platter scratches', `d${d}.vinyl`)}
       >
         VINYL
       </Btn>
@@ -504,13 +585,41 @@ function ToggleRow({ d }: { d: number }) {
         lit={s.keyLock}
         color="var(--accent)"
         onPress={() => D.toggleKeyLock(d)}
-        title="Key lock: change tempo without changing pitch"
+        title={hint('Key lock: change tempo without changing pitch', `d${d}.keyLock`)}
       >
         KEY LOCK
       </Btn>
-      <Btn lit={s.gridEdit} color="var(--warn)" onPress={() => D.toggleGridEdit(d)} title="Edit beat grid, BPM and key">
+      <Btn
+        lit={s.gridEdit}
+        color="var(--warn)"
+        onPress={() => D.toggleGridEdit(d)}
+        title={hint('Edit beat grid, BPM and key', `d${d}.grid.edit`)}
+      >
         GRID
       </Btn>
+      <TapButton d={d} />
     </div>
+  )
+}
+
+/** Tap along with the beat: sets the BPM and (while playing) where the beats are. */
+export function TapButton({ d }: { d: number }) {
+  const tapBpm = useDecks((st) => st.decks[d].tapBpm)
+  const tapCount = useDecks((st) => st.decks[d].tapCount)
+  const hint = useKeyHint()
+  const tapping = tapCount > 0
+  return (
+    <Btn
+      lit={tapping}
+      color="var(--warn)"
+      style={{ minWidth: 64 }}
+      onPress={() => D.tapTempo(d)}
+      title={hint(
+        'Tap along with the beat (4+ taps). While playing, your first tap becomes beat 1 and the grid lines up with your taps.',
+        `d${d}.grid.tap`
+      )}
+    >
+      {tapping ? `${tapBpm ? tapBpm.toFixed(1) : '…'} (${tapCount})` : 'TAP'}
+    </Btn>
   )
 }

@@ -1,7 +1,7 @@
 // Library actions: importing, folders, removing, re-analysing.
 
 import { api } from '../platform'
-import { getTrack, setMembership, upsertTracks, useLibrary, type View } from '../state/library'
+import { getTrack, reloadFolders, setMembership, upsertTracks, useLibrary, type View } from '../state/library'
 import { useDecks } from '../state/decks'
 import { toast } from '../state/ui'
 import { analysisQueue } from '../library/analysisQueue'
@@ -18,7 +18,7 @@ export async function pickAndImport(kind: 'files' | 'folder'): Promise<void> {
   useLibrary.setState({ importing: null })
   if (!tracks.length) return
   upsertTracks(tracks)
-  if (folderId != null) setMembership(folderId, await api.folders.addTracks(folderId, []))
+  await reloadFolders()
   analysisQueue.enqueue(tracks.filter((t) => !t.analyzed).map((t) => t.id))
   toast(`Imported ${tracks.length} track${tracks.length === 1 ? '' : 's'}`)
 }

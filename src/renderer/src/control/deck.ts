@@ -201,7 +201,7 @@ export function cueDown(d: number): void {
     updateMaster()
     return
   }
-  const pos = p.posNow()
+  const pos = Math.max(0, Math.min(s.duration, p.posNow()))
   if (Math.abs(pos - s.cuePoint) > 0.02) {
     const cue = snapToBeat(s, pos)
     p.send({ t: 'seek', pos: cue })
@@ -245,7 +245,7 @@ export function hotCueDown(d: number, slot: number): void {
   const p = player(d)
   const hc = s.hotCues[slot]
   if (!hc) {
-    const time = snapToBeat(s, p.posNow())
+    const time = Math.max(0, snapToBeat(s, p.posNow()))
     const hotCues = [...s.hotCues]
     hotCues[slot] = { slot, time, color: HOT_CUE_COLORS[slot] }
     patchDeck(d, { hotCues })
@@ -408,8 +408,14 @@ export const loopIn = (d: number) => deck(d).trackId != null && player(d).send({
 export const loopOut = (d: number) => deck(d).trackId != null && player(d).send({ t: 'loopOut' })
 export const reloop = (d: number) => deck(d).trackId != null && player(d).send({ t: 'reloop' })
 export const autoLoop = (d: number, beats = 4) => deck(d).trackId != null && player(d).send({ t: 'autoLoop', beats })
-export const loopHalve = (d: number) => player(d).send({ t: 'loopScale', factor: 0.5 })
-export const loopDouble = (d: number) => player(d).send({ t: 'loopScale', factor: 2 })
+/** ½ / ×2 keep the loop's start fixed, or its end when the anchor toggle is set to END. */
+export const loopHalve = (d: number) =>
+  player(d).send({ t: 'loopScale', factor: 0.5, fromEnd: deck(d).loopAnchor === 'end' })
+export const loopDouble = (d: number) =>
+  player(d).send({ t: 'loopScale', factor: 2, fromEnd: deck(d).loopAnchor === 'end' })
+export function toggleLoopAnchor(d: number): void {
+  patchDeck(d, { loopAnchor: deck(d).loopAnchor === 'start' ? 'end' : 'start' })
+}
 export const beatJump = (d: number, beats: number) =>
   deck(d).trackId != null && player(d).send({ t: 'beatJump', beats })
 
@@ -598,18 +604,83 @@ export function setGridBpm(d: number, bpm: number): void {
   setGrid(d, { bpm: newBpm, anchor: pinned - k * (60 / newBpm) })
 }
 
-const taps: number[][] = [[], []]
+// ------------------------------------------------------------------ tap tempo
+//
+// Tap a button along with the beat. While the deck is playing we record the track
+// POSITION of every tap, not just the time, so a straight-line fit through the taps gives
+// both the beat length (BPM) and where the beats are (the grid's position). The first tap
+// is treated as beat 1 of a phrase. The result is applied once you stop tapping.
 
-/** Tap along to the beat; after 4+ taps the BPM is set from the average interval. */
+interface Tap {
+  time: number // performance.now() in ms
+  pos: number | null // track position heard at the tap (null if the deck was stopped)
+}
+
+const taps: Tap[][] = [[], []]
+const tapTimers = [0, 0]
+const TAP_TIMEOUT = 1600 // ms of no tapping = done
+
+/** Least-squares line through (i, y_i): returns slope and intercept. */
+function fitLine(ys: number[]): { slope: number; intercept: number } {
+  const n = ys.length
+  const mx = (n - 1) / 2
+  const my = ys.reduce((a, b) => a + b, 0) / n
+  let num = 0
+  let den = 0
+  ys.forEach((y, i) => {
+    num += (i - mx) * (y - my)
+    den += (i - mx) * (i - mx)
+  })
+  const slope = num / den
+  return { slope, intercept: my - slope * mx }
+}
+
+/** Track-BPM estimate from the taps so far (null until there are enough). */
+function tapEstimate(d: number): number | null {
+  const list = taps[d]
+  if (list.length < 2) return null
+  if (list.every((t) => t.pos != null)) {
+    const { slope } = fitLine(list.map((t) => t.pos!))
+    return slope > 0 ? 60 / slope : null
+  }
+  // Deck stopped: use wall-clock intervals, converted to the track's own tempo.
+  const { slope } = fitLine(list.map((t) => t.time / 1000))
+  return slope > 0 ? 60 / slope / (1 + deck(d).tempo) : null
+}
+
 export function tapTempo(d: number): void {
+  if (deck(d).trackId == null) return
   const now = performance.now()
   const list = taps[d]
-  if (list.length && now - list[list.length - 1] > 2000) list.length = 0
-  list.push(now)
-  if (list.length > 16) list.shift()
-  if (list.length >= 4) {
-    const avg = (list[list.length - 1] - list[0]) / (list.length - 1)
-    setGridBpm(d, 60000 / avg)
+  if (list.length && now - list[list.length - 1].time > TAP_TIMEOUT) list.length = 0
+  const s = deck(d)
+  list.push({ time: now, pos: s.playing ? player(d).posHeard() : null })
+  if (list.length > 32) list.shift()
+  patchDeck(d, { tapBpm: tapEstimate(d), tapCount: list.length })
+  clearTimeout(tapTimers[d])
+  tapTimers[d] = window.setTimeout(() => applyTaps(d), TAP_TIMEOUT)
+}
+
+function applyTaps(d: number): void {
+  const list = taps[d]
+  const est = tapEstimate(d)
+  taps[d] = []
+  patchDeck(d, { tapBpm: null, tapCount: 0 })
+  if (list.length < 4 || est == null || est < 30 || est > 300) {
+    if (list.length) toast('Tap at least 4 times along with the beat')
+    return
+  }
+  // Most music uses whole-number BPMs and tapping is a little imprecise, so snap if close.
+  const bpm = Math.abs(est - Math.round(est)) < 0.25 ? Math.round(est) : Math.round(est * 100) / 100
+  const beat = 60 / bpm
+  if (list.every((t) => t.pos != null)) {
+    // Average "where would tap 0 be" over all taps, using the final (snapped) beat length.
+    const anchor = list.reduce((sum, t, i) => sum + (t.pos! - i * beat), 0) / list.length
+    setGrid(d, { bpm, anchor })
+    toast(`Tapped ${bpm} BPM. Beat 1 is on your first tap.`)
+  } else {
+    setGridBpm(d, bpm)
+    toast(`Tapped ${bpm} BPM. Play the track while tapping to also set the beat positions.`)
   }
 }
 

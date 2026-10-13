@@ -62,6 +62,11 @@ const MIGRATIONS: string[] = [
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+  `,
+  // v2: BPM and key found in the file's own tags (used as hints / fallbacks for analysis)
+  `
+  ALTER TABLE tracks ADD COLUMN tag_bpm REAL;
+  ALTER TABLE tracks ADD COLUMN tag_key INTEGER;
   `
 ]
 

@@ -34,6 +34,9 @@ export interface Track {
   key: number | null
   grid: BeatGrid | null
   analyzed: boolean
+  /** BPM / key stored in the file's tags by other software, if any. */
+  tagBpm: number | null
+  tagKey: number | null
   /** Suggested trim (dB) that brings the track to the reference loudness. */
   gainDb: number | null
   cuePoint: number | null
@@ -85,6 +88,9 @@ export interface AnalysisResult {
   waveform: Uint8Array
 }
 
+/** Tempo fader ranges (±fraction). 1 = ±100 %, i.e. from stopped to double speed. */
+export const TEMPO_RANGES = [0.06, 0.1, 0.16, 0.25, 0.5, 1]
+
 export const WAVEFORM_RATE = 150
 export const ANALYSIS_VERSION = 1
 
@@ -94,7 +100,7 @@ export interface Settings {
   masterDeviceId: string
   headphoneDeviceId: string // '' = headphones disabled
   keyNotation: KeyNotation
-  defaultTempoRange: number // 0.06, 0.10, 0.16, 0.5
+  defaultTempoRange: number // one of TEMPO_RANGES
   autoGain: boolean
   bpmRangeLow: number // detected tempos are folded into [low, low*2)
   downloadFolder: string
@@ -110,8 +116,8 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Omit<Settings, 'downloadFolder' | 'recordingFolder'> = {
   masterDeviceId: 'default',
   headphoneDeviceId: '',
-  keyNotation: 'camelot',
-  defaultTempoRange: 0.1,
+  keyNotation: 'musical',
+  defaultTempoRange: 0.25,
   autoGain: true,
   bpmRangeLow: 75,
   lockPlayingDeck: true,

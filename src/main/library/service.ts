@@ -7,6 +7,7 @@ import path from 'node:path'
 import { nativeImage } from 'electron'
 import { parseFile } from 'music-metadata'
 import type { ImportProgress, LibrarySnapshot, Track, TrackSource } from '@shared/types'
+import { parseKey } from '@shared/musicKey'
 import type { LibraryRepository } from './repository'
 import { locate, type VolumeWatcher } from './volumes'
 
@@ -103,25 +104,64 @@ export class LibraryService extends EventEmitter {
     }
   }
 
-  /** Expand files/folders into audio files and import each one. */
-  async importPaths(inputs: string[], onProgress?: (p: ImportProgress) => void): Promise<Track[]> {
-    const files: string[] = []
-    for (const p of inputs) await collectAudioFiles(p, files)
-    const imported: Track[] = []
-    let done = 0
-    await runPool(files, 4, async (file) => {
+  /**
+   * Import files and folders.
+   * - Files go into `folderId` (if given).
+   * - Each folder becomes an in-app folder with the same name (inside `folderId`), and its
+   *   sub-folders become nested in-app folders, mirroring the hierarchy on disk. Folders
+   *   that already exist with the same name are reused, so re-importing doesn't duplicate.
+   */
+  async importPaths(
+    inputs: string[],
+    folderId: number | null,
+    onProgress?: (p: ImportProgress) => void
+  ): Promise<Track[]> {
+    // 1. Work out every audio file and which in-app folder it belongs in.
+    const plan: { file: string; folder: number | null }[] = []
+    for (const p of inputs) {
+      let st
       try {
-        imported.push(await this.importFile(file))
+        st = await fs.stat(p)
+      } catch {
+        continue
+      }
+      if (st.isDirectory()) {
+        const tree = await scanTree(p)
+        if (tree) this.planTree(tree, folderId, plan)
+      } else if (AUDIO_EXTENSIONS.has(path.extname(p).toLowerCase())) {
+        plan.push({ file: path.resolve(p), folder: folderId })
+      }
+    }
+    // 2. Import (4 files at a time: reading tags is mostly waiting on the disk).
+    const results = new Map<string, Track>()
+    let done = 0
+    await runPool(plan, 4, async (item) => {
+      try {
+        results.set(item.file, await this.importFile(item.file))
       } catch (err) {
-        console.warn('Import failed for', file, err)
+        console.warn('Import failed for', item.file, err)
       }
       done++
-      onProgress?.({ done, total: files.length, current: path.basename(file) })
+      onProgress?.({ done, total: plan.length, current: path.basename(item.file) })
     })
-    // Keep the original order the user selected.
-    const order = new Map(files.map((f, i) => [f.toLowerCase(), i]))
-    imported.sort((a, b) => (order.get(a.path.toLowerCase()) ?? 0) - (order.get(b.path.toLowerCase()) ?? 0))
-    return imported
+    // 3. Put tracks into their folders, in the order they appear on disk.
+    const byFolder = new Map<number, number[]>()
+    for (const item of plan) {
+      const t = results.get(item.file)
+      if (t && item.folder != null) {
+        const list = byFolder.get(item.folder) ?? []
+        list.push(t.id)
+        byFolder.set(item.folder, list)
+      }
+    }
+    for (const [fid, ids] of byFolder) this.repo.addToFolder(fid, ids)
+    return plan.map((item) => results.get(item.file)).filter((t): t is Track => t != null)
+  }
+
+  private planTree(node: DirNode, parentId: number | null, plan: { file: string; folder: number | null }[]): void {
+    const folder = this.repo.ensureFolder(parentId, node.name)
+    for (const f of node.files) plan.push({ file: f, folder: folder.id })
+    for (const child of node.children) this.planTree(child, folder.id, plan)
   }
 
   /** Import one audio file. Returns the existing track if it's already in the library. */
@@ -134,6 +174,7 @@ export class LibraryService extends EventEmitter {
     if (existing) return existing
 
     const meta = await readTags(abs)
+    const tagKey = meta.key ? parseKey(meta.key) : null
     const track = this.repo.insertTrack({
       path: abs,
       serial: loc.serial,
@@ -149,7 +190,9 @@ export class LibraryService extends EventEmitter {
       duration: meta.duration,
       source: overrides.source ?? 'local',
       sourceUrl: overrides.sourceUrl ?? null,
-      sourceId: overrides.sourceId ?? null
+      sourceId: overrides.sourceId ?? null,
+      tagBpm: meta.bpm && meta.bpm > 30 && meta.bpm < 300 ? meta.bpm : null,
+      tagKey
     })
     const art = overrides.artwork ?? meta.picture
     if (art && (await this.writeArtwork(track.id, art))) {
@@ -194,6 +237,8 @@ interface Tags {
   comment: string
   duration: number
   picture: Buffer | null
+  bpm: number | null
+  key: string | null
 }
 
 async function readTags(file: string): Promise<Tags> {
@@ -215,41 +260,53 @@ async function readTags(file: string): Promise<Tags> {
       year: c.year ?? null,
       comment: typeof comment === 'string' ? comment : (comment?.text ?? ''),
       duration: m.format.duration ?? 0,
-      picture: pic ? Buffer.from(pic.data) : null
+      picture: pic ? Buffer.from(pic.data) : null,
+      bpm: typeof c.bpm === 'number' && isFinite(c.bpm) ? c.bpm : null,
+      key: typeof c.key === 'string' ? c.key : null
     }
   } catch {
-    return { ...fallback, album: '', genre: '', year: null, comment: '', duration: 0, picture: null }
+    return {
+      ...fallback,
+      album: '',
+      genre: '',
+      year: null,
+      comment: '',
+      duration: 0,
+      picture: null,
+      bpm: null,
+      key: null
+    }
   }
 }
 
-async function collectAudioFiles(p: string, out: string[]): Promise<void> {
-  let st
-  try {
-    st = await fs.stat(p)
-  } catch {
-    return
-  }
-  if (st.isFile()) {
-    if (AUDIO_EXTENSIONS.has(path.extname(p).toLowerCase())) out.push(path.resolve(p))
-    return
-  }
-  if (!st.isDirectory()) return
+interface DirNode {
+  name: string
+  files: string[]
+  children: DirNode[]
+}
+
+/** Walk a folder; returns its audio files and sub-folders, or null if it has no audio at all. */
+async function scanTree(dir: string): Promise<DirNode | null> {
   let entries
   try {
-    entries = await fs.readdir(p, { withFileTypes: true })
+    entries = await fs.readdir(dir, { withFileTypes: true })
   } catch {
-    return
+    return null
   }
   entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+  const node: DirNode = { name: path.basename(dir) || dir, files: [], children: [] }
   for (const e of entries) {
     if (e.name.startsWith('.')) continue
-    const full = path.join(p, e.name)
+    const full = path.join(dir, e.name)
     if (e.isDirectory()) {
-      if (!SKIP_DIRS.has(e.name.toLowerCase())) await collectAudioFiles(full, out)
+      if (SKIP_DIRS.has(e.name.toLowerCase())) continue
+      const child = await scanTree(full)
+      if (child) node.children.push(child)
     } else if (AUDIO_EXTENSIONS.has(path.extname(e.name).toLowerCase())) {
-      out.push(full)
+      node.files.push(path.resolve(full))
     }
   }
+  return node.files.length || node.children.length ? node : null
 }
 
 /** Run `fn` over `items` with at most `limit` running at once. */

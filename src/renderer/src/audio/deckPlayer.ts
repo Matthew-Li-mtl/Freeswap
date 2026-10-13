@@ -76,7 +76,8 @@ export class DeckPlayer implements BeatClock {
   /** Position (s) at audio-clock time t, extrapolated from the last report. */
   posAt(t: number): number {
     const p = this.last.pos + (t - this.last.time) * this.last.rate
-    return Math.max(0, Math.min(this.duration, p))
+    // May be slightly outside the track while it's being dragged past either end.
+    return Math.max(-60, Math.min(this.duration + 60, p))
   }
 
   /** Position the audio thread is rendering right now. Use for logic. */

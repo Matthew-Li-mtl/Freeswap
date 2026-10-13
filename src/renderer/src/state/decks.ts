@@ -56,6 +56,11 @@ export interface DeckState {
   fx: FxSlotState[]
   gridEdit: boolean
   ended: boolean
+  /** Which end stays put when the loop is halved/doubled. */
+  loopAnchor: 'start' | 'end'
+  /** Live tap-tempo readout while the user is tapping. */
+  tapBpm: number | null
+  tapCount: number
 }
 
 export interface MixerState {
@@ -104,6 +109,9 @@ export function initialDeck(tempoRange: number): DeckState {
       { type: 'sweep', enabled: false, depth: 0.5, beats: 4 }
     ],
     gridEdit: false,
+    loopAnchor: 'start',
+    tapBpm: null,
+    tapCount: 0,
     ended: false
   }
 }
@@ -116,7 +124,7 @@ interface DeckStore {
 }
 
 export const useDecks = create<DeckStore>(() => ({
-  decks: [initialDeck(0.1), initialDeck(0.1)],
+  decks: [initialDeck(0.25), initialDeck(0.25)],
   mixer: {
     crossfader: 0.5,
     crossfaderCurve: 'smooth',

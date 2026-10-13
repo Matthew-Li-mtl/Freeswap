@@ -26,6 +26,19 @@ interface YtInfo {
   duration?: number | null
   webpage_url?: string
   filepath: string
+  playlist_title?: string | null
+  playlist_index?: number | null
+  n_entries?: number | null
+}
+
+/** A link to a whole playlist (not a single video that happens to be in one). */
+export function isPlaylistUrl(url: string): boolean {
+  try {
+    const u = new URL(url)
+    return u.searchParams.has('list') && (u.pathname.startsWith('/playlist') || !u.searchParams.has('v'))
+  } catch {
+    return false
+  }
 }
 
 export class YouTubeImporter {
@@ -38,7 +51,8 @@ export class YouTubeImporter {
     private library: LibraryService,
     private getDownloadFolder: () => string,
     private onJobs: (jobs: DownloadJob[]) => void,
-    private onImported: (tracks: Track[], folderId: number | null) => void
+    private onImported: (tracks: Track[], folderId: number | null) => void,
+    private ensureFolder: (parentId: number | null, name: string) => number
   ) {}
 
   enqueue(url: string, folderId: number | null): void {
@@ -110,12 +124,15 @@ export class YouTubeImporter {
   }
 
   private async download(exe: string, job: DownloadJob, folderId: number | null): Promise<void> {
+    const playlist = isPlaylistUrl(job.url)
     const dir = this.getDownloadFolder()
     await fs.mkdir(dir, { recursive: true })
     const args = [
       '-f',
       'bestaudio/best',
-      '--no-playlist',
+      // A playlist link downloads every video; a video link only that video.
+      // --ignore-errors: one private/removed video shouldn't stop the rest.
+      ...(playlist ? ['--yes-playlist', '--ignore-errors'] : ['--no-playlist']),
       '--windows-filenames',
       '--encoding',
       'utf-8',
@@ -127,14 +144,15 @@ export class YouTubeImporter {
       '--progress-template',
       'download:FSPROG %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s',
       '--print',
-      'before_dl:FSNAME %(title)s',
+      'before_dl:FSNAME %(playlist_index|0)s %(n_entries|0)s %(title)s',
       '--print',
-      'after_move:FSJSON %(.{id,title,artist,track,uploader,channel,duration,webpage_url,filepath})j',
+      'after_move:FSJSON %(.{id,title,artist,track,uploader,channel,duration,webpage_url,filepath,playlist_title,playlist_index,n_entries})j',
       '--no-simulate',
       job.url
     ]
     const imports: Promise<void>[] = []
     let failure = ''
+    let playlistFolder: number | undefined
     await run(exe, args, (line) => {
       if (line.startsWith('FSPROG ')) {
         const [done, total, est] = line.slice(7).split(' ').map(Number)
@@ -142,17 +160,27 @@ export class YouTubeImporter {
         if (t > 0) job.progress = Math.min(1, done / t)
         this.emit()
       } else if (line.startsWith('FSNAME ')) {
-        job.title = line.slice(7)
+        const m = /^FSNAME (\S+) (\S+) (.*)$/.exec(line)
+        const [idx, total, title] = m ? [Number(m[1]), Number(m[2]), m[3]] : [0, 0, line.slice(7)]
+        job.title = playlist && total > 0 ? `(${idx}/${total}) ${title}` : title
         job.progress = 0
         this.emit()
       } else if (line.startsWith('FSJSON ')) {
         const info = JSON.parse(line.slice(7)) as YtInfo
-        imports.push(this.importDownloaded(info, folderId, job))
+        // Playlists get their own in-app folder, named after the playlist.
+        let target = folderId
+        if (playlist && info.playlist_title) {
+          playlistFolder ??= this.ensureFolder(folderId, info.playlist_title)
+          target = playlistFolder
+        }
+        imports.push(this.importDownloaded(info, target, job))
       } else if (line.startsWith('ERROR')) {
         failure = line
       }
     }).catch((err) => {
-      throw new Error(failure || (err as Error).message)
+      // With --ignore-errors yt-dlp still exits with an error code if any video failed;
+      // that's only fatal when nothing at all was downloaded.
+      if (!imports.length) throw new Error(failure || (err as Error).message)
     })
     await Promise.all(imports)
     if (!imports.length) throw new Error(failure || 'Nothing was downloaded')

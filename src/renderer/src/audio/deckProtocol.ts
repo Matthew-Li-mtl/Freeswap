@@ -21,7 +21,7 @@ export type DeckCommand =
   | { t: 'reloop' }
   | { t: 'loopExit' }
   | { t: 'autoLoop'; beats: number }
-  | { t: 'loopScale'; factor: number }
+  | { t: 'loopScale'; factor: number; fromEnd?: boolean }
   | { t: 'loopSet'; start: number; end: number; active: boolean }
   | { t: 'beatJump'; beats: number }
   | { t: 'roll'; beats: number | null }

@@ -18,6 +18,7 @@ const WS_H = WS_L / 2 // WSOLA hop: frames overlap by 50 %
 const WS_SEARCH = 480 // how far (samples) WSOLA may shift a frame to find a good match
 const WS_DECIM = 4 // correlate every 4th sample during the coarse search (speed)
 const REPORT_EVERY = 3 // send our position to the main thread every N blocks
+const OUTSIDE_SECONDS = 60 // how far past either end the record can be dragged
 
 class DeckProcessor extends AudioWorkletProcessor {
   // ----- track data -----
@@ -222,9 +223,12 @@ class DeckProcessor extends AudioWorkletProcessor {
       case 'loopScale': {
         if (this.loopStart < 0 || this.loopEnd <= this.loopStart) break
         const newLen = Math.max(32, (this.loopEnd - this.loopStart) * c.factor)
-        this.loopEnd = this.loopStart + newLen
-        if (this.loopActive && this.pos >= this.loopEnd) {
-          this.jumpTo(this.loopStart + ((this.pos - this.loopStart) % newLen))
+        if (c.fromEnd) this.loopStart = this.loopEnd - newLen
+        else this.loopEnd = this.loopStart + newLen
+        // If the playhead is now outside the loop, wrap it back in at the same beat offset.
+        if (this.loopActive && (this.pos >= this.loopEnd || this.pos < this.loopStart)) {
+          const off = (((this.pos - this.loopStart) % newLen) + newLen) % newLen
+          this.jumpTo(this.loopStart + off)
         }
         this.postLoop()
         break
@@ -550,15 +554,20 @@ class DeckProcessor extends AudioWorkletProcessor {
       if (this.loopActive && this.loopEnd > this.loopStart && this.rate > 0 && this.pos >= this.loopEnd) {
         this.jumpTo(this.loopStart + ((this.pos - this.loopEnd) % (this.loopEnd - this.loopStart)))
       }
-      if (this.pos >= this.len) {
+      if (this.scratching) {
+        // While the record is held you may drag before the start or past the end (silence
+        // there), so the motion stays smooth instead of sticking at the edges.
+        const margin = sampleRate * OUTSIDE_SECONDS
+        if (this.pos < -margin) this.pos = -margin
+        else if (this.pos > this.len + margin) this.pos = this.len + margin
+      } else if (this.pos >= this.len) {
         this.pos = this.len
         if (this.playing) {
           this.playing = false
           this.post({ t: 'ended' })
         }
-      } else if (this.pos < 0) {
-        this.pos = 0
       }
+      // Before the start (pos < 0) we simply play silence until the track begins.
     }
 
     this.report(posAtStart)

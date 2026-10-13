@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from './platform'
 import { createEngine } from './audio/engine'
 import { loadSettings, settings, updateSettings, useSettings } from './state/settings'
-import { getTrack, loadLibrary, upsertTracks, useLibrary } from './state/library'
+import { getTrack, loadLibrary, reloadFolders, upsertTracks, useLibrary } from './state/library'
 import { useUi } from './state/ui'
 import { initDecks, loadTrack, setTempoRange, syncEngineFromState } from './control/deck'
 import { applyMixerToEngine } from './control/mixer'
@@ -17,6 +17,7 @@ import { Browser, moveSelection, searchInputRef, selectedTrack } from './ui/Brow
 import { SettingsModal } from './ui/Settings'
 import { KeyOverlay } from './ui/KeyOverlay'
 import { ContextMenu } from './ui/ContextMenu'
+import { TrackInfoModal } from './ui/TrackInfo'
 
 async function boot(): Promise<void> {
   const s = await loadSettings()
@@ -35,7 +36,7 @@ async function boot(): Promise<void> {
     if (fresh.length) {
       // New tracks (e.g. a finished YouTube download): analyse them and refresh folders.
       analysisQueue.enqueue(fresh.filter((t) => !t.analyzed).map((t) => t.id))
-      void api.library.getSnapshot().then((snap) => useLibrary.setState({ membership: snap.membership }))
+      void reloadFolders()
     }
   })
   api.library.onImportProgress((p) => useLibrary.setState({ importing: p.done < p.total ? p : null }))
@@ -144,6 +145,7 @@ function Main() {
       <SettingsModal />
       <KeyOverlay />
       <ContextMenu />
+      <TrackInfoModal />
       <div className="toasts">
         {toasts.map((t) => (
           <div key={t.id} className={`toast ${t.kind}`}>

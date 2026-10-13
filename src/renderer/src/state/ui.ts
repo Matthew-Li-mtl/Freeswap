@@ -13,6 +13,8 @@ interface UiStore {
   showImport: boolean
   /** Bumped when sampler slots change so pads re-read their names. */
   samplerVersion: number
+  /** Track whose info (title, artist...) is being edited, if any. */
+  editTrack: number | null
 }
 
 export const useUi = create<UiStore>(() => ({
@@ -20,7 +22,8 @@ export const useUi = create<UiStore>(() => ({
   showKeys: false,
   showSettings: false,
   showImport: false,
-  samplerVersion: 0
+  samplerVersion: 0,
+  editTrack: null
 }))
 
 let toastId = 0

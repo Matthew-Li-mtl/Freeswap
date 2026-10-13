@@ -51,6 +51,12 @@ export async function loadLibrary(): Promise<void> {
   useLibrary.setState({ tracks, folders: snap.folders, membership: snap.membership })
 }
 
+/** Re-read the folder tree and folder contents (after imports create folders). */
+export async function reloadFolders(): Promise<void> {
+  const snap = await api.library.getSnapshot()
+  useLibrary.setState({ folders: snap.folders, membership: snap.membership })
+}
+
 export function upsertTracks(list: Track[]): void {
   if (!list.length) return
   useLibrary.setState((s) => {

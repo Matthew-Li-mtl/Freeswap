@@ -49,7 +49,7 @@ export function Jog({ d, size }: { d: number; size: number }) {
       const pos = s.trackId != null ? p.posHeard() : 0
       // progress arc
       if (s.trackId != null && s.duration > 0) {
-        const frac = Math.min(1, pos / s.duration)
+        const frac = Math.max(0, Math.min(1, pos / s.duration))
         g.beginPath()
         g.arc(cx, cx, platterR + 2 * dpr, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2)
         g.strokeStyle = COLORS[d]

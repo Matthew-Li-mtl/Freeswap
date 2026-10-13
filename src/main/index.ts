@@ -55,7 +55,8 @@ async function boot(): Promise<void> {
           tracks.map((t) => t.id)
         )
       mainWindow?.webContents.send(IPC.libraryTracksChanged, tracks)
-    }
+    },
+    (parentId, name) => repo.ensureFolder(parentId, name).id
   )
 
   const recorder = new WavRecorder()

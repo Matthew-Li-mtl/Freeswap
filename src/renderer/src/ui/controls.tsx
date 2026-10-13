@@ -129,7 +129,10 @@ export function Knob({
           onChange(clamp01(drag.current.v + (drag.current.y - e.clientY) / sens))
         }}
         onPointerUp={() => (drag.current = null)}
-        onDoubleClick={() => onChange(defaultValue)}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          onChange(defaultValue)
+        }}
         onWheel={(e) => onChange(clamp01(value - Math.sign(e.deltaY) * (e.shiftKey ? 0.005 : 0.03)))}
       >
         <circle cx={c} cy={c} r={r} fill="#10131a" stroke="#2f3644" strokeWidth={1} />
@@ -227,7 +230,10 @@ export function Fader({
         onChange(toValue(startPx + delta / scale))
       }}
       onPointerUp={() => (drag.current = null)}
-      onDoubleClick={() => defaultValue != null && onChange(defaultValue)}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        if (defaultValue != null) onChange(defaultValue)
+      }}
       onWheel={(e) => {
         const step = (e.shiftKey ? 0.002 : 0.02) * Math.sign(e.deltaY)
         onChange(clamp01(value + (vertical && !invert ? -step : step)))
