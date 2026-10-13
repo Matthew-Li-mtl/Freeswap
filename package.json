@@ -13,7 +13,8 @@
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
-    "dist": "electron-vite build && electron-builder --win"
+    "dist": "electron-vite build && electron-builder --win",
+    "icon": "node scripts/make-icon.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
@@ -25,15 +26,15 @@
     "electron-vite": "^5.0.0",
     "playwright-core": "^1.64.0",
     "prettier": "^3.9.10",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.7",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "zustand": "^5.0.15"
   },
   "dependencies": {
     "ffmpeg-static": "^5.3.0",
-    "music-metadata": "^11.16.1",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
-    "zustand": "^5.0.15"
+    "music-metadata": "^11.16.1"
   }
 }
