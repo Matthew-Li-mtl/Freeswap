@@ -13,7 +13,15 @@ import { loadTrack } from '../control/deck'
 import { api } from '../platform'
 import { Btn } from './controls'
 import { openMenu, type MenuItem } from './ContextMenu'
-import { FOLDER_MIME, TRACKS_MIME, hasFiles, importDroppedFiles, readDraggedTracks, setDragTracks } from './dnd'
+import {
+  FOLDER_MIME,
+  TRACKS_MIME,
+  droppedPaths,
+  hasFiles,
+  importDroppedFiles,
+  readDraggedTracks,
+  setDragTracks
+} from './dnd'
 import { formatTime } from './frameLoop'
 
 const COLORS = ['#2fd6b5', '#ff7a59']
@@ -104,6 +112,7 @@ function FolderNode({
   const expanded = useLibrary((s) => !!s.expanded[folder.id])
   const active = useLibrary((s) => s.view === folder.id)
   const count = useLibrary((s) => (s.membership[folder.id] ?? []).length)
+  const flash = useLibrary((s) => s.highlight.includes(folder.id))
   const toggle = () =>
     useLibrary.setState((s) => ({ expanded: { ...s.expanded, [folder.id]: !s.expanded[folder.id] } }))
 
@@ -129,7 +138,7 @@ function FolderNode({
       <TreeRow
         label={folder.name}
         count={count}
-        icon={children.length ? (expanded ? '▾' : '▸') : '•'}
+        icon={children.length ? (expanded ? '▼' : '▶') : ''}
         onIcon={children.length ? toggle : undefined}
         active={active}
         depth={depth + 1}
@@ -151,6 +160,7 @@ function FolderNode({
         onDropFiles={(e) => void importDroppedFiles(e, folder.id)}
         onDropFolder={(id) => void L.moveFolder(id, folder.id, children.length)}
         onAdd={() => void onNew(folder.id)}
+        flash={flash}
       />
       {expanded &&
         children.map((c) => (
@@ -177,7 +187,12 @@ function TreeRow(props: {
   onDropFiles?: (e: React.DragEvent) => void
   onDropFolder?: (id: number) => void
   onAdd?: () => void
+  flash?: boolean
 }) {
+  const rowRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (props.flash) rowRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [props.flash])
   const [over, setOver] = useState(false)
   const style: CSSProperties = {
     display: 'flex',
@@ -193,7 +208,8 @@ function TreeRow(props: {
   }
   return (
     <div
-      className="tree-row"
+      ref={rowRef}
+      className={`tree-row ${props.flash ? 'flash' : ''}`}
       style={style}
       onClick={props.onClick}
       onDoubleClick={props.onDoubleClick}
@@ -226,7 +242,14 @@ function TreeRow(props: {
       }}
     >
       <span
-        style={{ width: 12, textAlign: 'center', color: 'var(--text-faint)' }}
+        style={{
+          width: 14,
+          textAlign: 'center',
+          fontSize: 9,
+          color: props.onIcon ? 'var(--text-dim)' : 'var(--text-faint)',
+          cursor: props.onIcon ? 'pointer' : undefined
+        }}
+        title={props.onIcon ? 'Show / hide sub-folders' : undefined}
         onClick={(e) => {
           if (props.onIcon) {
             e.stopPropagation()
@@ -554,7 +577,7 @@ function TrackTable() {
       onDrop={(e) => {
         if (hasFiles(e) && !readDraggedTracks(e).length) {
           e.preventDefault()
-          void importDroppedFiles(e, L.currentFolder())
+          void L.importDropped(droppedPaths(e))
         }
       }}
     >

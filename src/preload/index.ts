@@ -15,7 +15,7 @@ const api: FreeswapAPI = {
   library: {
     getSnapshot: () => ipcRenderer.invoke(IPC.librarySnapshot),
     importPaths: (paths, folderId) => ipcRenderer.invoke(IPC.libraryImportPaths, paths, folderId),
-    pickAndImport: (kind, folderId) => ipcRenderer.invoke(IPC.libraryPickImport, kind, folderId),
+    pickPaths: (kind) => ipcRenderer.invoke(IPC.libraryPickPaths, kind),
     updateTrack: (id, patch) => ipcRenderer.invoke(IPC.libraryUpdateTrack, id, patch),
     removeTracks: (ids) => ipcRenderer.invoke(IPC.libraryRemoveTracks, ids),
     saveAnalysis: (id, result) => ipcRenderer.invoke(IPC.librarySaveAnalysis, id, result),

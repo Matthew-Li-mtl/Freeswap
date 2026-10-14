@@ -695,7 +695,7 @@ export async function reanalyze(d: number): Promise<void> {
   if (id == null) return
   await persist(d, { grid: null, key: null })
   patchDeck(d, { analyzing: true })
-  const t = await analysisQueue.analyzeNow(id)
+  const t = await analysisQueue.analyzeNow(id, undefined, true)
   if (!t) patchDeck(d, { analyzing: false })
 }
 

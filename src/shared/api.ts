@@ -9,6 +9,7 @@ import type {
   DownloadJob,
   Folder,
   ImportProgress,
+  ImportResult,
   LibrarySnapshot,
   Settings,
   Track,
@@ -20,8 +21,9 @@ export type Unsubscribe = () => void
 export interface FreeswapAPI {
   library: {
     getSnapshot(): Promise<LibrarySnapshot>
-    importPaths(paths: string[], folderId: number | null): Promise<Track[]>
-    pickAndImport(kind: 'files' | 'folder', folderId: number | null): Promise<Track[]>
+    importPaths(paths: string[], folderId: number | null): Promise<ImportResult>
+    /** Show the OS file/folder picker; returns the chosen paths ([] if cancelled). */
+    pickPaths(kind: 'files' | 'folder'): Promise<string[]>
     updateTrack(id: number, patch: TrackPatch): Promise<Track>
     removeTracks(ids: number[]): Promise<void>
     saveAnalysis(id: number, result: AnalysisResult): Promise<Track>
@@ -66,7 +68,7 @@ export interface FreeswapAPI {
 export const IPC = {
   librarySnapshot: 'library:snapshot',
   libraryImportPaths: 'library:importPaths',
-  libraryPickImport: 'library:pickImport',
+  libraryPickPaths: 'library:pickPaths',
   libraryUpdateTrack: 'library:updateTrack',
   libraryRemoveTracks: 'library:removeTracks',
   librarySaveAnalysis: 'library:saveAnalysis',

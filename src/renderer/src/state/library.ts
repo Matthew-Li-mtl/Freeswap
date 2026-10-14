@@ -23,6 +23,8 @@ interface LibraryStore {
   importing: ImportProgress | null
   analysisQueue: number
   downloads: DownloadJob[]
+  /** Folders to flash briefly (e.g. just imported). */
+  highlight: number[]
 }
 
 export const useLibrary = create<LibraryStore>(() => ({
@@ -37,7 +39,8 @@ export const useLibrary = create<LibraryStore>(() => ({
   expanded: {},
   importing: null,
   analysisQueue: 0,
-  downloads: []
+  downloads: [],
+  highlight: []
 }))
 
 export function getTrack(id: number): Track | undefined {
@@ -49,6 +52,21 @@ export async function loadLibrary(): Promise<void> {
   const tracks: Record<number, Track> = {}
   for (const t of snap.tracks) tracks[t.id] = t
   useLibrary.setState({ tracks, folders: snap.folders, membership: snap.membership })
+}
+
+let highlightTimer = 0
+
+/**
+ * Briefly flash folders in the tree (after an import). Their parent folders are expanded
+ * so they're visible, but the folders themselves stay collapsed.
+ */
+export function highlightFolders(ids: number[]): void {
+  if (!ids.length) return
+  const expanded = { ...useLibrary.getState().expanded }
+  for (const id of ids) for (const f of folderPath(id).slice(0, -1)) expanded[f.id] = true
+  useLibrary.setState({ highlight: ids, expanded })
+  clearTimeout(highlightTimer)
+  highlightTimer = window.setTimeout(() => useLibrary.setState({ highlight: [] }), 4000)
 }
 
 /** Re-read the folder tree and folder contents (after imports create folders). */

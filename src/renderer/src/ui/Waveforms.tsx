@@ -16,7 +16,7 @@ import type { DeckState } from '../state/decks'
 import { deck } from '../state/decks'
 import { settings, updateSettings } from '../state/settings'
 import { getEngine } from '../audio/engine'
-import { getWaveform } from '../library/waveforms'
+import { waveformOrFetch } from '../library/waveforms'
 import * as D from '../control/deck'
 import { fitCanvas, onFrame } from './frameLoop'
 
@@ -159,7 +159,7 @@ export function ZoomedWaveform({ d }: { d: number }) {
         g.fillRect(xa, 0, xb - xa, H)
       }
 
-      const data = getWaveform(s.trackId)
+      const data = waveformOrFetch(s.trackId)
       if (data) drawBands(g, data, t0, t1, toX(0), pxPerSec, mid, half)
       else {
         g.fillStyle = '#3b4250'
@@ -371,7 +371,7 @@ export function OverviewWaveform({ d }: { d: number }) {
       g.fillStyle = '#0a0b0f'
       g.fillRect(0, 0, W, H)
       if (s.trackId == null || !s.duration) return
-      const data = getWaveform(s.trackId)
+      const data = waveformOrFetch(s.trackId)
       const key = `${s.trackId}:${W}:${H}:${data ? data.length : 0}`
       if (data && cache.current?.key !== key) {
         // The whole-track picture never changes, so render it once to an offscreen canvas.

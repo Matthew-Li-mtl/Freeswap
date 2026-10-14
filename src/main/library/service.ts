@@ -6,7 +6,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { nativeImage } from 'electron'
 import { parseFile } from 'music-metadata'
-import type { ImportProgress, LibrarySnapshot, Track, TrackSource } from '@shared/types'
+import type { ImportProgress, ImportResult, LibrarySnapshot, Track, TrackSource } from '@shared/types'
 import { parseKey } from '@shared/musicKey'
 import type { LibraryRepository } from './repository'
 import { locate, type VolumeWatcher } from './volumes'
@@ -115,9 +115,10 @@ export class LibraryService extends EventEmitter {
     inputs: string[],
     folderId: number | null,
     onProgress?: (p: ImportProgress) => void
-  ): Promise<Track[]> {
+  ): Promise<ImportResult> {
     // 1. Work out every audio file and which in-app folder it belongs in.
     const plan: { file: string; folder: number | null }[] = []
+    const topFolders = new Set<number>()
     for (const p of inputs) {
       let st
       try {
@@ -127,9 +128,10 @@ export class LibraryService extends EventEmitter {
       }
       if (st.isDirectory()) {
         const tree = await scanTree(p)
-        if (tree) this.planTree(tree, folderId, plan)
+        if (tree) topFolders.add(this.planTree(tree, folderId, plan))
       } else if (AUDIO_EXTENSIONS.has(path.extname(p).toLowerCase())) {
         plan.push({ file: path.resolve(p), folder: folderId })
+        if (folderId != null) topFolders.add(folderId)
       }
     }
     // 2. Import (4 files at a time: reading tags is mostly waiting on the disk).
@@ -155,13 +157,18 @@ export class LibraryService extends EventEmitter {
       }
     }
     for (const [fid, ids] of byFolder) this.repo.addToFolder(fid, ids)
-    return plan.map((item) => results.get(item.file)).filter((t): t is Track => t != null)
+    return {
+      tracks: plan.map((item) => results.get(item.file)).filter((t): t is Track => t != null),
+      folders: [...topFolders]
+    }
   }
 
-  private planTree(node: DirNode, parentId: number | null, plan: { file: string; folder: number | null }[]): void {
+  /** Create (or reuse) the in-app folder tree for a scanned directory; returns its root folder id. */
+  private planTree(node: DirNode, parentId: number | null, plan: { file: string; folder: number | null }[]): number {
     const folder = this.repo.ensureFolder(parentId, node.name)
     for (const f of node.files) plan.push({ file: f, folder: folder.id })
     for (const child of node.children) this.planTree(child, folder.id, plan)
+    return folder.id
   }
 
   /** Import one audio file. Returns the existing track if it's already in the library. */

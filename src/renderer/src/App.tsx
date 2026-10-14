@@ -18,6 +18,7 @@ import { SettingsModal } from './ui/Settings'
 import { KeyOverlay } from './ui/KeyOverlay'
 import { ContextMenu } from './ui/ContextMenu'
 import { TrackInfoModal } from './ui/TrackInfo'
+import { ChoiceDialog } from './ui/ChoiceDialog'
 
 async function boot(): Promise<void> {
   const s = await loadSettings()
@@ -146,6 +147,7 @@ function Main() {
       <KeyOverlay />
       <ContextMenu />
       <TrackInfoModal />
+      <ChoiceDialog />
       <div className="toasts">
         {toasts.map((t) => (
           <div key={t.id} className={`toast ${t.kind}`}>

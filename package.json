@@ -1,7 +1,7 @@
 {
   "name": "freeswap",
   "productName": "Freeswap",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Free, open-source two-deck DJ software for the desktop",
   "license": "GPL-3.0-or-later",
   "author": "Matthew Li",

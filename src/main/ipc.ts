@@ -2,7 +2,7 @@
 
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { IPC } from '@shared/api'
-import type { AnalysisResult, Settings, Track, TrackPatch } from '@shared/types'
+import type { AnalysisResult, ImportResult, Settings, Track, TrackPatch } from '@shared/types'
 import type { LibraryRepository } from './library/repository'
 import { AUDIO_EXTENSIONS, type LibraryService } from './library/service'
 import type { SettingsStore } from './settings'
@@ -25,22 +25,20 @@ export function registerIpc(d: Deps): void {
 
   d.library.on('tracksChanged', (tracks: Track[]) => send(IPC.libraryTracksChanged, tracks))
 
-  const importInto = async (paths: string[], folderId: number | null): Promise<Track[]> => {
+  const importInto = async (paths: string[], folderId: number | null): Promise<ImportResult> => {
     return d.library.importPaths(paths, folderId, (p) => send(IPC.libraryImportProgress, p))
   }
 
   ipcMain.handle(IPC.librarySnapshot, () => d.library.snapshot())
   ipcMain.handle(IPC.libraryImportPaths, (_e, paths: string[], folderId: number | null) => importInto(paths, folderId))
-  ipcMain.handle(IPC.libraryPickImport, async (_e, kind: 'files' | 'folder', folderId: number | null) => {
-    const win = d.window()
+  ipcMain.handle(IPC.libraryPickPaths, async (_e, kind: 'files' | 'folder') => {
     const exts = [...AUDIO_EXTENSIONS].map((e) => e.slice(1))
-    const res = await dialog.showOpenDialog(win!, {
+    const res = await dialog.showOpenDialog(d.window()!, {
       title: kind === 'folder' ? 'Import a folder of music' : 'Import music files',
       properties: kind === 'folder' ? ['openDirectory', 'multiSelections'] : ['openFile', 'multiSelections'],
       filters: kind === 'files' ? [{ name: 'Audio', extensions: exts }] : undefined
     })
-    if (res.canceled) return []
-    return importInto(res.filePaths, folderId)
+    return res.canceled ? [] : res.filePaths
   })
   ipcMain.handle(IPC.libraryUpdateTrack, (_e, id: number, patch: TrackPatch) => d.repo.updateTrack(id, patch))
   ipcMain.handle(IPC.libraryRemoveTracks, (_e, ids: number[]) => d.repo.removeTracks(ids))

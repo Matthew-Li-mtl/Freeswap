@@ -127,6 +127,12 @@ export const DEFAULT_SETTINGS: Omit<Settings, 'downloadFolder' | 'recordingFolde
   samplerSlots: {}
 }
 
+export interface ImportResult {
+  tracks: Track[]
+  /** In-app folders the import created or filled at the top level (for highlighting). */
+  folders: number[]
+}
+
 export interface ImportProgress {
   done: number
   total: number

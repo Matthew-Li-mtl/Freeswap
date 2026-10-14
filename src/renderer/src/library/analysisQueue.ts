@@ -16,6 +16,8 @@ import { setWaveform } from './waveforms'
 interface Job {
   trackId: number
   buffer?: AudioBuffer
+  /** Analyse even if the track already has results (the RE-ANALYSE button). */
+  force: boolean
   resolve: (t: Track | null) => void
 }
 
@@ -35,6 +37,8 @@ class AnalysisQueue {
   private nextId = 1
   private replies = new Map<number, (r: WorkerReply) => void>()
   private listeners = new Set<(t: Track) => void>()
+  /** Tracks being analysed right now, so the same track is never analysed twice at once. */
+  private inFlight = new Map<number, Promise<Track | null>>()
 
   /** Borrow an idle worker, creating one if we're under the limit. */
   private acquire(): Worker {
@@ -56,19 +60,27 @@ class AnalysisQueue {
     return () => this.listeners.delete(cb)
   }
 
-  enqueue(ids: number[]): void {
+  /**
+   * Queue tracks for background analysis. Tracks that are already analysed, queued or
+   * in progress are skipped, unless `force` (RE-ANALYSE) is set.
+   */
+  enqueue(ids: number[], force = false): void {
     for (const id of ids) {
-      if (this.queue.some((j) => j.trackId === id)) continue
-      this.queue.push({ trackId: id, resolve: () => undefined })
+      if (this.queue.some((j) => j.trackId === id) || this.inFlight.has(id)) continue
+      if (!force && getTrack(id)?.analyzed) continue
+      this.queue.push({ trackId: id, force, resolve: () => undefined })
     }
     this.pump()
   }
 
   /** Analyse right away (front of the queue), optionally with audio already decoded. */
-  analyzeNow(trackId: number, buffer?: AudioBuffer): Promise<Track | null> {
+  analyzeNow(trackId: number, buffer?: AudioBuffer, force = false): Promise<Track | null> {
+    // Already being analysed (e.g. by the background queue)? Just wait for that result.
+    const running = this.inFlight.get(trackId)
+    if (running && !force) return running
     return new Promise((resolve) => {
       this.queue = this.queue.filter((j) => j.trackId !== trackId)
-      this.queue.unshift({ trackId, buffer, resolve })
+      this.queue.unshift({ trackId, buffer, force, resolve })
       // A deck is waiting: allow one extra job beyond the normal limit.
       this.pump(1)
     })
@@ -82,17 +94,18 @@ class AnalysisQueue {
     while (this.queue.length && this.running < MAX_WORKERS + extra) {
       const job = this.queue.shift()!
       this.running++
-      void this.run(job)
-        .catch((err) => {
-          console.warn('Analysis failed for track', job.trackId, err)
-          return null
-        })
-        .then((t) => {
-          job.resolve(t)
-          this.running--
-          this.updateCount()
-          this.pump()
-        })
+      const work = this.run(job).catch((err) => {
+        console.warn('Analysis failed for track', job.trackId, err)
+        return null
+      })
+      this.inFlight.set(job.trackId, work)
+      void work.then((t) => {
+        if (this.inFlight.get(job.trackId) === work) this.inFlight.delete(job.trackId)
+        job.resolve(t)
+        this.running--
+        this.updateCount()
+        this.pump()
+      })
     }
     this.updateCount()
   }
@@ -100,6 +113,8 @@ class AnalysisQueue {
   private async run(job: Job): Promise<Track | null> {
     const track = getTrack(job.trackId)
     if (!track || !track.available) return null
+    // Analysed in the meantime (e.g. it was loaded onto a deck while waiting here)?
+    if (track.analyzed && !job.force) return track
     const t0 = performance.now()
     let mono: Float32Array
     let rate: number
